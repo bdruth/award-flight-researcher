@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 import httpx
 
 from .config import Env
+from .seatsaero import availability_url
 
 log = logging.getLogger(__name__)
 ISO = "%Y-%m-%dT%H:%M:%SZ"
@@ -53,14 +54,23 @@ def build_alerts_for_new_viable(conn: sqlite3.Connection) -> list[Alert]:
         )
         out_desc = _describe_leg(r["out_cabin"], r["out_seats"], r["out_miles"], r["out_fees"], r["out_snap"])
         ret_desc = _describe_leg(r["ret_cabin"], r["ret_seats"], r["ret_miles"], r["ret_fees"], r["ret_snap"])
+        out_url = _leg_url(r["out_cabin"], r["out_src"], r["out_org"], r["out_dst"], r["out_date"])
+        ret_url = _leg_url(r["ret_cabin"], r["ret_src"], r["ret_org"], r["ret_dst"], r["ret_date"])
         body = (
             f"{r['nights']} nights | pool: {r['bookable_from']}\n"
-            f"OUT: {r['out_src']} {out_desc}\n"
-            f"RET: {r['ret_src']} {ret_desc}\n"
+            f"OUT: {r['out_src']} {out_desc}\n  {out_url}\n"
+            f"RET: {r['ret_src']} {ret_desc}\n  {ret_url}\n"
             f"TOTAL: {r['total_miles']:,}mi + ${r['total_fees_cents']/100:.0f}"
         )
-        alerts.append(Alert(pair_id=int(r["pair_id"]), title=title, body=body))
+        alerts.append(Alert(pair_id=int(r["pair_id"]), title=title, body=body, url=out_url))
     return alerts
+
+
+def _leg_url(cabin: str, source: str, origin: str, dest: str, depart_iso: str) -> str:
+    from datetime import date
+    # Mixed legs span multiple per-cabin bookings; use the cabin-agnostic search URL.
+    src = source.split("+")[0] if cabin == "mixed" else source
+    return availability_url(origin=origin, destination=dest, depart_date=date.fromisoformat(depart_iso), source=src)
 
 
 def _describe_leg(cabin: str, seats: int, miles: int, fees_cents: int, snap_json: str | None) -> str:

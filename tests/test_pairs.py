@@ -15,7 +15,7 @@ from researcher.config import (
     TransferablePool,
     TripConfig,
 )
-from researcher.seatsaero import LegRow, _taxes_to_cents
+from researcher.seatsaero import LegRow, _taxes_to_cents, any_trip_within_layover_window, availability_url
 
 
 def _search(allow_open_jaw: bool = True, cabins: tuple[str, ...] = ("economy",)) -> SearchConfig:
@@ -183,6 +183,57 @@ def test_pax_split_skipped_when_a_single_cabin_already_has_enough(conn):
         conn, pax=4, cabins=("economy", "business"), balances=_balances(),
     )
     assert upserted == 0
+
+
+def test_any_trip_within_layover_window():
+    # Direct trip (no layovers) always passes.
+    direct = [{"AvailabilitySegments": [{"Order": 0, "DepartsAt": "2026-06-15T15:00:00Z", "ArrivesAt": "2026-06-15T18:00:00Z"}]}]
+    assert any_trip_within_layover_window(direct, layover_min=90, layover_max=300) is True
+
+    # One-stop trip with a 79-minute connection: too tight.
+    tight = [{"AvailabilitySegments": [
+        {"Order": 0, "DepartsAt": "2026-06-15T15:00:00Z", "ArrivesAt": "2026-06-15T18:00:00Z"},
+        {"Order": 1, "DepartsAt": "2026-06-15T19:19:00Z", "ArrivesAt": "2026-06-15T21:00:00Z"},
+    ]}]
+    assert any_trip_within_layover_window(tight, layover_min=90, layover_max=300) is False
+
+    # Same itinerary but two trip variants — second one has a 120-minute layover and passes.
+    mixed = [
+        tight[0],
+        {"AvailabilitySegments": [
+            {"Order": 0, "DepartsAt": "2026-06-15T15:00:00Z", "ArrivesAt": "2026-06-15T18:00:00Z"},
+            {"Order": 1, "DepartsAt": "2026-06-15T20:00:00Z", "ArrivesAt": "2026-06-15T21:30:00Z"},
+        ]},
+    ]
+    assert any_trip_within_layover_window(mixed, layover_min=90, layover_max=300) is True
+
+    # Excessive layover blocks too.
+    long = [{"AvailabilitySegments": [
+        {"Order": 0, "DepartsAt": "2026-06-15T08:00:00Z", "ArrivesAt": "2026-06-15T11:00:00Z"},
+        {"Order": 1, "DepartsAt": "2026-06-15T17:00:00Z", "ArrivesAt": "2026-06-15T19:00:00Z"},  # 360-min layover
+    ]}]
+    assert any_trip_within_layover_window(long, layover_min=90, layover_max=300) is False
+
+
+def test_availability_url_shape():
+    url = availability_url(origin="ORD", destination="HND", depart_date=date(2026, 12, 18), source="aeroplan")
+    assert "origin_airport=ORD" in url
+    assert "destination_airport=HND" in url
+    assert "start_date=2026-12-18" in url and "end_date=2026-12-18" in url
+    assert "source=aeroplan" in url
+
+
+def test_layover_filter_excludes_pairs_with_failing_legs(conn):
+    pairs_mod.upsert_leg(conn, _leg("ORD", "HND", date(2026, 12, 18)))
+    pairs_mod.upsert_leg(conn, _leg("HND", "ORD", date(2027, 1, 1)))
+    # Both legs pass layover filter -> 1 viable pair.
+    conn.execute("UPDATE legs SET meets_layover_filter = 1")
+    stats = pairs_mod.join_pairs(conn, _search(), _balances())
+    assert stats.pairs_promoted_viable == 1
+    # Now mark the outbound as failing layover -> the pair must drop out of the join.
+    conn.execute("UPDATE legs SET meets_layover_filter = 0 WHERE origin = 'ORD'")
+    stats = pairs_mod.join_pairs(conn, _search(), _balances())
+    assert stats.pairs_invalidated == 1
 
 
 def test_alerted_pair_stays_alerted_on_rejoin(conn):

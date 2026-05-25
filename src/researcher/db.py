@@ -22,6 +22,9 @@ CREATE TABLE IF NOT EXISTS legs (
     first_seen_at TEXT NOT NULL,
     last_seen_at  TEXT NOT NULL,
     last_snapshot_json TEXT,
+    availability_id TEXT,
+    segments_json TEXT,
+    meets_layover_filter INTEGER,
     UNIQUE(source, origin, destination, depart_date, cabin)
 );
 
@@ -80,6 +83,19 @@ def connect(db_path: Path) -> sqlite3.Connection:
 
 def init(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
+    _migrate_add_columns(conn)
+
+
+def _migrate_add_columns(conn: sqlite3.Connection) -> None:
+    """Idempotently add columns introduced after the initial schema."""
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(legs)")}
+    for col, ddl in (
+        ("availability_id", "ALTER TABLE legs ADD COLUMN availability_id TEXT"),
+        ("segments_json", "ALTER TABLE legs ADD COLUMN segments_json TEXT"),
+        ("meets_layover_filter", "ALTER TABLE legs ADD COLUMN meets_layover_filter INTEGER"),
+    ):
+        if col not in existing:
+            conn.execute(ddl)
 
 
 @contextmanager

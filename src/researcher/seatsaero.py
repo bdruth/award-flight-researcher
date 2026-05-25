@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from typing import Iterable, Iterator
 
 import httpx
@@ -31,6 +31,7 @@ class LegRow:
     fees_cents: int
     direct: bool
     raw: dict
+    availability_id: str | None = None
 
 
 class SeatsAeroClient:
@@ -49,6 +50,12 @@ class SeatsAeroClient:
 
     def __exit__(self, *exc) -> None:
         self.close()
+
+    def trip(self, availability_id: str) -> list[dict]:
+        """Fetch trip variants (each with per-segment detail) for an availability."""
+        r = self._client.get(f"/trips/{availability_id}")
+        r.raise_for_status()
+        return r.json().get("data", []) or []
 
     def cached_search(
         self,
@@ -115,6 +122,7 @@ def normalize(
             if miles <= 0:
                 continue
             fees_cents = _taxes_to_cents(row.get(taxes_f))
+            avail_id = row.get("ID") or row.get("Id") or row.get("id")
             yield LegRow(
                 source=str(source).lower(),
                 origin=str(origin).upper(),
@@ -126,6 +134,7 @@ def normalize(
                 fees_cents=fees_cents,
                 direct=bool(row.get(direct_f)),
                 raw=row,
+                availability_id=str(avail_id) if avail_id else None,
             )
 
 
@@ -135,6 +144,53 @@ def _parse_date(v) -> date | None:
     s = str(v)[:10]
     try:
         return date.fromisoformat(s)
+    except ValueError:
+        return None
+
+
+def trip_layovers_minutes(trip: dict) -> list[int]:
+    """Connection times in minutes between consecutive segments of one trip.
+    Empty for direct (single-segment) trips."""
+    segs = sorted(trip.get("AvailabilitySegments") or [], key=lambda s: s.get("Order", 0))
+    out: list[int] = []
+    for i in range(len(segs) - 1):
+        arr = _parse_iso(segs[i].get("ArrivesAt"))
+        dep = _parse_iso(segs[i + 1].get("DepartsAt"))
+        if arr is None or dep is None:
+            continue
+        out.append(int((dep - arr).total_seconds() // 60))
+    return out
+
+
+def any_trip_within_layover_window(
+    trips: list[dict], *, layover_min: int, layover_max: int
+) -> bool:
+    """True if at least one trip variant has every layover in [min, max].
+    Direct trips (no layovers) always pass."""
+    for trip in trips:
+        gaps = trip_layovers_minutes(trip)
+        if not gaps:
+            return True
+        if all(layover_min <= g <= layover_max for g in gaps):
+            return True
+    return False
+
+
+def availability_url(*, origin: str, destination: str, depart_date: date, source: str) -> str:
+    """Front-end search URL that scopes results to one route+date+source."""
+    iso = depart_date.isoformat()
+    return (
+        "https://seats.aero/search"
+        f"?origin_airport={origin}&destination_airport={destination}"
+        f"&start_date={iso}&end_date={iso}&source={source}"
+    )
+
+
+def _parse_iso(v) -> datetime | None:
+    if not v:
+        return None
+    try:
+        return datetime.fromisoformat(str(v).replace("Z", "+00:00"))
     except ValueError:
         return None
 

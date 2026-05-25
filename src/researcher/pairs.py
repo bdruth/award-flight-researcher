@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from .config import BalancesConfig, SearchConfig
 from .pricing import best_pax_split, pair_feasibility
+from .seatsaero import SeatsAeroClient, any_trip_within_layover_window
+
+log = logging.getLogger(__name__)
 
 ISO = "%Y-%m-%dT%H:%M:%SZ"
 
@@ -25,20 +29,23 @@ class JoinStats:
 
 def upsert_leg(conn: sqlite3.Connection, leg) -> int:
     now = _now()
+    avail_id = getattr(leg, "availability_id", None)
     cur = conn.execute(
         """
         INSERT INTO legs (source, origin, destination, depart_date, cabin,
                           seats_remaining, miles, fees_cents, stops, direct,
                           duration_min, flight_numbers,
-                          first_seen_at, last_seen_at, last_snapshot_json)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                          first_seen_at, last_seen_at, last_snapshot_json,
+                          availability_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(source, origin, destination, depart_date, cabin) DO UPDATE SET
             seats_remaining = excluded.seats_remaining,
             miles = excluded.miles,
             fees_cents = excluded.fees_cents,
             direct = excluded.direct,
             last_seen_at = excluded.last_seen_at,
-            last_snapshot_json = excluded.last_snapshot_json
+            last_snapshot_json = excluded.last_snapshot_json,
+            availability_id = COALESCE(excluded.availability_id, legs.availability_id)
         RETURNING id
         """,
         (
@@ -47,6 +54,7 @@ def upsert_leg(conn: sqlite3.Connection, leg) -> int:
             0 if leg.direct else 1, 1 if leg.direct else 0,
             None, None,
             now, now, None,
+            avail_id,
         ),
     )
     row = cur.fetchone()
@@ -105,6 +113,8 @@ def join_pairs(
          AND date(r.depart_date) BETWEEN date(?) AND date(?)
          AND CAST(julianday(r.depart_date) - julianday(o.depart_date) AS INTEGER)
              BETWEEN ? AND ?
+         AND (o.meets_layover_filter IS NULL OR o.meets_layover_filter = 1)
+         AND (r.meets_layover_filter IS NULL OR r.meets_layover_filter = 1)
         """,
         (
             *origins, *out_dests, *out_dests, *origins,
@@ -219,6 +229,51 @@ def join_pairs(
 
 
 MIXED_CABIN = "mixed"
+
+
+def enrich_layovers(
+    conn: sqlite3.Connection, client: SeatsAeroClient, *, layover_min: int, layover_max: int
+) -> int:
+    """Fetch /trips for legs missing segments_json, then (re)compute meets_layover_filter
+    for every enriched leg against the current layover window. Returns count of legs newly fetched."""
+    to_fetch = conn.execute(
+        """
+        SELECT id, availability_id FROM legs
+         WHERE cabin != ?
+           AND availability_id IS NOT NULL
+           AND segments_json IS NULL
+        """,
+        (MIXED_CABIN,),
+    ).fetchall()
+    fetched = 0
+    for r in to_fetch:
+        try:
+            trips = client.trip(r["availability_id"])
+        except Exception as e:
+            log.warning("trip fetch for leg %d failed: %s", r["id"], e)
+            continue
+        conn.execute(
+            "UPDATE legs SET segments_json = ? WHERE id = ?",
+            (json.dumps(trips), r["id"]),
+        )
+        fetched += 1
+
+    # Recompute the filter flag for every leg that has segment data, so a config
+    # change to layover_minutes takes effect on the next cycle without re-polling.
+    enriched = conn.execute(
+        "SELECT id, segments_json FROM legs WHERE segments_json IS NOT NULL"
+    ).fetchall()
+    for r in enriched:
+        try:
+            trips = json.loads(r["segments_json"])
+        except (ValueError, TypeError):
+            continue
+        ok = any_trip_within_layover_window(trips, layover_min=layover_min, layover_max=layover_max)
+        conn.execute(
+            "UPDATE legs SET meets_layover_filter = ? WHERE id = ?",
+            (1 if ok else 0, r["id"]),
+        )
+    return fetched
 
 
 def synthesize_pax_splits(
