@@ -1,0 +1,63 @@
+name: poll
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: poll
+  cancel-in-progress: false
+
+env:
+  S3_ENDPOINT: https://minio.example.com
+  S3_BUCKET: my-bucket
+  S3_PREFIX: award-flight-researcher
+  DB_PATH: data/researcher.db
+
+jobs:
+  poll:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        run: curl -LsSf https://astral.sh/uv/install.sh | sh
+
+      - name: Install mc (MinIO client)
+        run: |
+          curl -sSLo /usr/local/bin/mc https://dl.min.io/client/mc/release/linux-amd64/mc
+          chmod +x /usr/local/bin/mc
+          mc alias set homelab "$S3_ENDPOINT" "$AWS_ACCESS_KEY_ID" "$AWS_SECRET_ACCESS_KEY"
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
+      - name: Fetch config from MinIO
+        run: |
+          mc cp "homelab/$S3_BUCKET/$S3_PREFIX/search.yaml"   config/search.yaml
+          mc cp "homelab/$S3_BUCKET/$S3_PREFIX/balances.yaml" config/balances.yaml
+
+      - name: Fetch sqlite DB from MinIO (ok if missing on first run)
+        run: |
+          mkdir -p "$(dirname "$DB_PATH")"
+          mc cp "homelab/$S3_BUCKET/$S3_PREFIX/researcher.db" "$DB_PATH" || \
+            echo "no existing DB in MinIO — starting fresh"
+
+      - name: uv sync
+        run: ~/.local/bin/uv sync
+
+      - name: init-db (idempotent)
+        run: ~/.local/bin/uv run researcher init-db
+        env:
+          SEATSAERO_API_KEY: ${{ secrets.SEATSAERO_API_KEY }}
+
+      - name: run-once
+        run: ~/.local/bin/uv run researcher run-once
+        env:
+          SEATSAERO_API_KEY: ${{ secrets.SEATSAERO_API_KEY }}
+          PUSHOVER_TOKEN: ${{ secrets.PUSHOVER_TOKEN }}
+          PUSHOVER_USER: ${{ secrets.PUSHOVER_USER }}
+
+      - name: Push sqlite DB back to MinIO
+        run: mc cp "$DB_PATH" "homelab/$S3_BUCKET/$S3_PREFIX/researcher.db"
