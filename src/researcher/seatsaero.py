@@ -140,16 +140,16 @@ def _parse_date(v) -> date | None:
 
 
 def _taxes_to_cents(v) -> int:
-    """seats.aero returns taxes as a string like '125.40' or as cents int; normalize to cents."""
+    """seats.aero returns taxes already in cents (int or decimal-free string).
+    A string with a decimal point is dollars (e.g. '125.40') and gets converted."""
     if v is None or v == "":
         return 0
     try:
         if isinstance(v, (int, float)):
-            return int(round(float(v) * 100)) if float(v) < 10000 else int(v)
+            return int(v)
         s = str(v).replace(",", "").strip()
         if "." in s:
             return int(round(float(s) * 100))
-        n = int(s)
-        return n if n > 10000 else n * 100
+        return int(s)
     except (ValueError, TypeError):
         return 0

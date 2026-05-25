@@ -168,6 +168,9 @@ def join_pairs(
         else:
             pid = int(existing["id"])
             old_state = existing["state"]
+            # 'alerted' is sticky as long as the pair stays feasible: re-seeing a
+            # bookable pair must not put it back in the alert queue.
+            effective_state = "alerted" if (old_state == "alerted" and new_state == "viable") else new_state
             conn.execute(
                 """
                 UPDATE pairs
@@ -175,14 +178,14 @@ def join_pairs(
                        bookable_from = ?, state = ?, last_seen_at = ?
                  WHERE id = ?
                 """,
-                (row["nights"], total_miles, total_fees, feas.pool_name, new_state, now, pid),
+                (row["nights"], total_miles, total_fees, feas.pool_name, effective_state, now, pid),
             )
-            if old_state != new_state:
+            if old_state != effective_state:
                 conn.execute(
                     "INSERT INTO pair_events (pair_id, old_state, new_state, ts, note) VALUES (?, ?, ?, ?, ?)",
-                    (pid, old_state, new_state, now, feas.reason),
+                    (pid, old_state, effective_state, now, feas.reason),
                 )
-                if new_state == "viable":
+                if effective_state == "viable":
                     stats["pairs_promoted_viable"] += 1
             seen_pair_ids.add(pid)
 

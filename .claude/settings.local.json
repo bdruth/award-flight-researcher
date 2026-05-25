@@ -15,7 +15,11 @@
       "Bash(tea repos *)",
       "Bash(tea actions *)",
       "Bash(git remote *)",
-      "Bash(git ls-tree *)"
+      "Bash(git ls-tree *)",
+      "Bash(git config *)",
+      "Bash(uv sync *)",
+      "Bash(rm -f /Users/me/Projects/award-flight-researcher/data/researcher.db*)",
+      "Bash(uv run *)"
     ]
   }
 }

@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pytest
 
+from researcher import alerts as alerts_mod
 from researcher import db as db_mod
 from researcher import pairs as pairs_mod
 from researcher.config import (
@@ -14,7 +15,7 @@ from researcher.config import (
     TransferablePool,
     TripConfig,
 )
-from researcher.seatsaero import LegRow
+from researcher.seatsaero import LegRow, _taxes_to_cents
 
 
 def _search(allow_open_jaw: bool = True) -> SearchConfig:
@@ -119,3 +120,35 @@ def test_invalidation_on_seat_loss(conn):
     pairs_mod.upsert_leg(conn, _leg("ORD", "HND", date(2026, 12, 18), seats=1))
     stats = pairs_mod.join_pairs(conn, _search(), _balances())
     assert stats.pairs_invalidated == 1
+
+
+def test_taxes_to_cents_trusts_int_as_cents():
+    # Regression: seats.aero returns YTotalTaxes as int cents (e.g. 560 for $5.60).
+    # The earlier "small int = dollars" heuristic was multiplying these by 100.
+    assert _taxes_to_cents(560) == 560
+    assert _taxes_to_cents(12345) == 12345
+    assert _taxes_to_cents("560") == 560
+    assert _taxes_to_cents("5.60") == 560        # decimal-bearing string is dollars
+    assert _taxes_to_cents("125.40") == 12540
+    assert _taxes_to_cents(None) == 0
+    assert _taxes_to_cents("") == 0
+
+
+def test_alerted_pair_stays_alerted_on_rejoin(conn):
+    # Regression: re-joining a still-feasible pair previously overwrote its
+    # 'alerted' state with 'viable', causing it to re-page every cycle.
+    pairs_mod.upsert_leg(conn, _leg("ORD", "HND", date(2026, 12, 18)))
+    pairs_mod.upsert_leg(conn, _leg("HND", "ORD", date(2027, 1, 1)))
+    pairs_mod.join_pairs(conn, _search(), _balances())
+
+    pending = alerts_mod.build_alerts_for_new_viable(conn)
+    assert len(pending) == 1
+    alerts_mod.mark_alerted(conn, [a.pair_id for a in pending])
+
+    # Re-join: same legs, still feasible. Must not re-queue the alert.
+    stats = pairs_mod.join_pairs(conn, _search(), _balances())
+    assert stats.pairs_promoted_viable == 0
+    assert alerts_mod.build_alerts_for_new_viable(conn) == []
+
+    state = conn.execute("SELECT state FROM pairs").fetchone()[0]
+    assert state == "alerted"
