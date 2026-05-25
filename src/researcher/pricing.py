@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Iterator
 
 from .config import BalancesConfig
 
@@ -125,3 +126,72 @@ def pair_feasibility(
     if not ret_b.bookable:
         return Feasibility(False, None, f"return infeasible: {ret_b.reason}")
     return Feasibility(True, f"{out_program}+{ret_program}", f"split: {out_b.reason}; {ret_b.reason}")
+
+
+@dataclass(frozen=True)
+class CabinAllocation:
+    cabin: str
+    count: int
+    miles_per_pax: int
+    fees_cents_per_pax: int
+
+
+@dataclass(frozen=True)
+class LegSplit:
+    allocations: tuple[CabinAllocation, ...]
+    total_miles: int
+    total_fees_cents: int
+
+
+def _enumerate_splits(
+    offers: list[tuple[str, int, int, int]], pax: int
+) -> Iterator[LegSplit]:
+    """Yield every assignment of `pax` across the given (cabin, seats, miles, fees) offers
+    that exactly sums to pax and respects each cabin's seat ceiling."""
+    n = len(offers)
+    if n == 0:
+        return
+    counts = [0] * n
+
+    def recurse(idx: int, remaining: int) -> Iterator[LegSplit]:
+        cabin, seats, _miles, _fees = offers[idx]
+        if idx == n - 1:
+            if 0 <= remaining <= seats:
+                counts[idx] = remaining
+                allocs: list[CabinAllocation] = []
+                total_m = total_f = 0
+                for i, (c, _s, m, f) in enumerate(offers):
+                    if counts[i] > 0:
+                        allocs.append(CabinAllocation(c, counts[i], m, f))
+                        total_m += counts[i] * m
+                        total_f += counts[i] * f
+                if allocs:
+                    yield LegSplit(tuple(allocs), total_m, total_f)
+            return
+        for k in range(min(remaining, seats) + 1):
+            counts[idx] = k
+            yield from recurse(idx + 1, remaining - k)
+
+    yield from recurse(0, pax)
+
+
+def best_pax_split(
+    offers: list[tuple[str, int, int, int]], pax: int, balances: BalancesConfig
+) -> LegSplit | None:
+    """Cheapest valid pax-split for one leg across its cabin offers.
+    Per-cabin caps are applied per allocation. Returns None if no valid split exists."""
+    best: LegSplit | None = None
+    for split in _enumerate_splits(offers, pax):
+        if any(
+            _check_caps(
+                miles_per_pax=a.miles_per_pax,
+                fees_cents_per_pax=a.fees_cents_per_pax,
+                cabin=a.cabin,
+                balances=balances,
+            )
+            for a in split.allocations
+        ):
+            continue
+        if best is None or split.total_miles < best.total_miles:
+            best = split
+    return best

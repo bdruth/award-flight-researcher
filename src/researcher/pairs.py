@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from .config import BalancesConfig, SearchConfig
-from .pricing import pair_feasibility
+from .pricing import best_pax_split, pair_feasibility
 
 ISO = "%Y-%m-%dT%H:%M:%SZ"
 
@@ -215,3 +216,78 @@ def join_pairs(
         stats["pairs_invalidated"] += 1
 
     return JoinStats(**stats)
+
+
+MIXED_CABIN = "mixed"
+
+
+def synthesize_pax_splits(
+    conn: sqlite3.Connection, *, pax: int, cabins: tuple[str, ...], balances: BalancesConfig
+) -> int:
+    """For each flight (source, origin, destination, depart_date) where no single
+    cabin has >= pax seats but combined cabins do, upsert a synthetic 'mixed'
+    leg representing the cheapest valid pax-split. Returns the count of mixed
+    legs upserted. The pair joiner picks these up like any other cabin."""
+    if pax <= 0 or not cabins:
+        return 0
+    now = _now()
+    placeholders = ",".join("?" * len(cabins))
+
+    flights = conn.execute(
+        f"""
+        SELECT source, origin, destination, depart_date,
+               SUM(seats_remaining) AS total_seats,
+               MAX(seats_remaining) AS max_cabin_seats
+          FROM legs
+         WHERE cabin IN ({placeholders})
+         GROUP BY source, origin, destination, depart_date
+        HAVING total_seats >= ? AND max_cabin_seats < ?
+        """,
+        (*cabins, pax, pax),
+    ).fetchall()
+
+    upserted = 0
+    for f in flights:
+        offer_rows = conn.execute(
+            f"""
+            SELECT cabin, seats_remaining, miles, fees_cents
+              FROM legs
+             WHERE source = ? AND origin = ? AND destination = ? AND depart_date = ?
+               AND cabin IN ({placeholders})
+            """,
+            (f["source"], f["origin"], f["destination"], f["depart_date"], *cabins),
+        ).fetchall()
+        offers = [(o["cabin"], o["seats_remaining"], o["miles"], o["fees_cents"]) for o in offer_rows]
+        split = best_pax_split(offers, pax, balances)
+        if split is None:
+            continue
+        avg_miles = split.total_miles // pax
+        avg_fees = split.total_fees_cents // pax
+        snapshot = json.dumps({
+            "pax": pax,
+            "allocations": [
+                {"cabin": a.cabin, "count": a.count, "miles_per_pax": a.miles_per_pax, "fees_cents_per_pax": a.fees_cents_per_pax}
+                for a in split.allocations
+            ],
+            "total_miles": split.total_miles,
+            "total_fees_cents": split.total_fees_cents,
+        })
+        conn.execute(
+            """
+            INSERT INTO legs (source, origin, destination, depart_date, cabin,
+                              seats_remaining, miles, fees_cents, stops, direct,
+                              duration_min, flight_numbers,
+                              first_seen_at, last_seen_at, last_snapshot_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 1, NULL, NULL, ?, ?, ?)
+            ON CONFLICT(source, origin, destination, depart_date, cabin) DO UPDATE SET
+                seats_remaining = excluded.seats_remaining,
+                miles = excluded.miles,
+                fees_cents = excluded.fees_cents,
+                last_seen_at = excluded.last_seen_at,
+                last_snapshot_json = excluded.last_snapshot_json
+            """,
+            (f["source"], f["origin"], f["destination"], f["depart_date"], MIXED_CABIN,
+             pax, avg_miles, avg_fees, now, now, snapshot),
+        )
+        upserted += 1
+    return upserted

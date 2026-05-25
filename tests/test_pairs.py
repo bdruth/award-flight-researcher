@@ -154,6 +154,37 @@ def test_mixed_cabin_pair_blocked_by_per_leg_cap(conn):
     assert stats.pairs_promoted_viable == 0
 
 
+def test_pax_split_synthesizes_mixed_leg_when_no_single_cabin_suffices(conn):
+    # 4 pax. Each side has 2 J seats + 2 Y seats — no single cabin satisfies pax,
+    # but combined they do. Expect a synthetic 'mixed' leg per side, then a viable pair.
+    for d in (date(2026, 12, 18), date(2027, 1, 1)):
+        origin, dest = ("ORD", "HND") if d == date(2026, 12, 18) else ("HND", "ORD")
+        pairs_mod.upsert_leg(conn, _leg(origin, dest, d, cabin="business", seats=2, miles=120_000))
+        pairs_mod.upsert_leg(conn, _leg(origin, dest, d, cabin="economy",  seats=2, miles=55_000))
+
+    upserted = pairs_mod.synthesize_pax_splits(
+        conn, pax=4, cabins=("economy", "business"), balances=_balances(),
+    )
+    assert upserted == 2
+
+    stats = pairs_mod.join_pairs(conn, _search(cabins=("economy", "business")), _balances())
+    mixed_pairs = conn.execute(
+        "SELECT COUNT(*) FROM pairs p JOIN legs ol ON ol.id = p.out_leg_id WHERE ol.cabin = 'mixed'"
+    ).fetchone()[0]
+    assert mixed_pairs >= 1
+    assert stats.pairs_promoted_viable >= 1
+
+
+def test_pax_split_skipped_when_a_single_cabin_already_has_enough(conn):
+    # Economy alone has >= pax. No synthesis needed; existing per-cabin path covers it.
+    pairs_mod.upsert_leg(conn, _leg("ORD", "HND", date(2026, 12, 18), cabin="economy", seats=10))
+    pairs_mod.upsert_leg(conn, _leg("HND", "ORD", date(2027, 1, 1),  cabin="economy", seats=10))
+    upserted = pairs_mod.synthesize_pax_splits(
+        conn, pax=4, cabins=("economy", "business"), balances=_balances(),
+    )
+    assert upserted == 0
+
+
 def test_alerted_pair_stays_alerted_on_rejoin(conn):
     # Regression: re-joining a still-feasible pair previously overwrote its
     # 'alerted' state with 'viable', causing it to re-page every cycle.

@@ -80,10 +80,13 @@ def _poll_once(
             log.info("polled %s→%s: %d legs ingested", origin, dest, count)
 
     with db_mod.transaction(conn):
+        synth = pairs_mod.synthesize_pax_splits(
+            conn, pax=search.trip.passengers, cabins=search.cabins, balances=balances,
+        )
         stats = pairs_mod.join_pairs(conn, search, balances)
     log.info(
-        "join: seen=%d new=%d promoted_viable=%d invalidated=%d",
-        stats.pairs_seen, stats.pairs_new, stats.pairs_promoted_viable, stats.pairs_invalidated,
+        "synthesized %d pax-split leg(s); join: seen=%d new=%d promoted_viable=%d invalidated=%d",
+        synth, stats.pairs_seen, stats.pairs_new, stats.pairs_promoted_viable, stats.pairs_invalidated,
     )
 
     new_alerts = alerts_mod.build_alerts_for_new_viable(conn)
@@ -167,10 +170,12 @@ def list_pairs(state: str, limit: int, search_path: Path, balances_path: Path) -
         return
     for r in rows:
         cabin_tag = r["out_cabin"] if r["out_cabin"] == r["ret_cabin"] else f"{r['out_cabin']}/{r['ret_cabin']}"
+        out_seats_str = f"split×{r['out_seats']}" if r["out_cabin"] == "mixed" else f"{r['out_seats']} seats"
+        ret_seats_str = f"split×{r['ret_seats']}" if r["ret_cabin"] == "mixed" else f"{r['ret_seats']} seats"
         click.echo(
             f"#{r['id']:<5} [{cabin_tag:<17}] "
-            f"{r['out_org']}->{r['out_dst']} {r['out_date']} ({r['out_src']}, {r['out_seats']} seats) | "
-            f"{r['ret_org']}->{r['ret_dst']} {r['ret_date']} ({r['ret_src']}, {r['ret_seats']} seats) | "
+            f"{r['out_org']}->{r['out_dst']} {r['out_date']} ({r['out_src']}, {out_seats_str}) | "
+            f"{r['ret_org']}->{r['ret_dst']} {r['ret_date']} ({r['ret_src']}, {ret_seats_str}) | "
             f"{r['nights']}n | {r['total_miles']:,}mi + ${r['total_fees_cents']/100:.0f} "
             f"via {r['bookable_from']}"
         )
