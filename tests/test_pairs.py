@@ -18,7 +18,7 @@ from researcher.config import (
 from researcher.seatsaero import LegRow, _taxes_to_cents
 
 
-def _search(allow_open_jaw: bool = True) -> SearchConfig:
+def _search(allow_open_jaw: bool = True, cabins: tuple[str, ...] = ("economy",)) -> SearchConfig:
     return SearchConfig(
         trip=TripConfig(
             passengers=4,
@@ -35,26 +35,26 @@ def _search(allow_open_jaw: bool = True) -> SearchConfig:
             layover_min=90,
             layover_max=300,
         ),
-        cabins=("economy",),
+        cabins=cabins,
         sources=("aeroplan",),
         poll=PollConfig(15, 360, 30, 5),
         leg_filters=LegFilters(min_seats=4, exclude_overnight_layovers=False),
     )
 
 
-def _balances(direct: int = 1_000_000) -> BalancesConfig:
+def _balances(direct: int = 1_000_000, max_miles_per_pax: dict[str, int] | None = None) -> BalancesConfig:
     return BalancesConfig(
         direct={"aeroplan": direct},
         transferable=(TransferablePool(name="chase_ur", balance=0, targets=("aeroplan",)),),
         max_fees_per_pax_usd=300,
-        max_miles_per_pax={"economy": 150_000},
+        max_miles_per_pax=max_miles_per_pax or {"economy": 150_000, "business": 250_000},
     )
 
 
-def _leg(origin: str, dest: str, d: date, *, source="aeroplan", seats=4, miles=55_000, fees_cents=8000) -> LegRow:
+def _leg(origin: str, dest: str, d: date, *, source="aeroplan", seats=4, miles=55_000, fees_cents=8000, cabin="economy") -> LegRow:
     return LegRow(
         source=source, origin=origin, destination=dest, depart_date=d,
-        cabin="economy", seats_remaining=seats, miles=miles, fees_cents=fees_cents,
+        cabin=cabin, seats_remaining=seats, miles=miles, fees_cents=fees_cents,
         direct=True, raw={},
     )
 
@@ -132,6 +132,26 @@ def test_taxes_to_cents_trusts_int_as_cents():
     assert _taxes_to_cents("125.40") == 12540
     assert _taxes_to_cents(None) == 0
     assert _taxes_to_cents("") == 0
+
+
+def test_mixed_cabin_pair_promoted_viable(conn):
+    # business outbound + economy return on the same program: caps are checked
+    # per-leg against each leg's own cabin cap, balance is summed across the pair.
+    pairs_mod.upsert_leg(conn, _leg("ORD", "HND", date(2026, 12, 18), cabin="business", miles=120_000))
+    pairs_mod.upsert_leg(conn, _leg("HND", "ORD", date(2027, 1, 1),  cabin="economy",  miles=55_000))
+    stats = pairs_mod.join_pairs(conn, _search(cabins=("economy", "business")), _balances())
+    assert stats.pairs_new == 1
+    assert stats.pairs_promoted_viable == 1
+
+
+def test_mixed_cabin_pair_blocked_by_per_leg_cap(conn):
+    # outbound business miles (260k) exceed business cap (250k); the cheap
+    # economy return must not rescue the pair via averaging.
+    pairs_mod.upsert_leg(conn, _leg("ORD", "HND", date(2026, 12, 18), cabin="business", miles=260_000))
+    pairs_mod.upsert_leg(conn, _leg("HND", "ORD", date(2027, 1, 1),  cabin="economy",  miles=55_000))
+    stats = pairs_mod.join_pairs(conn, _search(cabins=("economy", "business")), _balances())
+    assert stats.pairs_new == 1
+    assert stats.pairs_promoted_viable == 0
 
 
 def test_alerted_pair_stays_alerted_on_rejoin(conn):

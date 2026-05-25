@@ -27,10 +27,10 @@ def build_alerts_for_new_viable(conn: sqlite3.Connection) -> list[Alert]:
         """
         SELECT p.id AS pair_id, p.nights, p.total_miles, p.total_fees_cents, p.bookable_from,
                ol.source AS out_src, ol.origin AS out_org, ol.destination AS out_dst,
-               ol.depart_date AS out_date, ol.cabin AS cabin,
+               ol.depart_date AS out_date, ol.cabin AS out_cabin,
                ol.seats_remaining AS out_seats, ol.miles AS out_miles, ol.fees_cents AS out_fees,
                rl.source AS ret_src, rl.origin AS ret_org, rl.destination AS ret_dst,
-               rl.depart_date AS ret_date,
+               rl.depart_date AS ret_date, rl.cabin AS ret_cabin,
                rl.seats_remaining AS ret_seats, rl.miles AS ret_miles, rl.fees_cents AS ret_fees
           FROM pairs p
           JOIN legs ol ON ol.id = p.out_leg_id
@@ -42,16 +42,17 @@ def build_alerts_for_new_viable(conn: sqlite3.Connection) -> list[Alert]:
 
     alerts: list[Alert] = []
     for r in rows:
+        cabin_tag = r["out_cabin"] if r["out_cabin"] == r["ret_cabin"] else f"{r['out_cabin']}/{r['ret_cabin']}"
         title = (
             f"{r['out_org']}→{r['out_dst']} {r['out_date']} / "
             f"{r['ret_org']}→{r['ret_dst']} {r['ret_date']} "
-            f"[{r['cabin']}]"
+            f"[{cabin_tag}]"
         )
         body = (
             f"{r['nights']} nights | pool: {r['bookable_from']}\n"
-            f"OUT: {r['out_src']} {r['out_seats']} seats, "
+            f"OUT [{r['out_cabin']}]: {r['out_src']} {r['out_seats']} seats, "
             f"{r['out_miles']:,}mi + ${r['out_fees']/100:.0f}/pax\n"
-            f"RET: {r['ret_src']} {r['ret_seats']} seats, "
+            f"RET [{r['ret_cabin']}]: {r['ret_src']} {r['ret_seats']} seats, "
             f"{r['ret_miles']:,}mi + ${r['ret_fees']/100:.0f}/pax\n"
             f"TOTAL (4 pax): {r['total_miles']:,}mi + ${r['total_fees_cents']/100:.0f}"
         )

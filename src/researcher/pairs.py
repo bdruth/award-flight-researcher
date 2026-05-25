@@ -77,7 +77,8 @@ def join_pairs(
         SELECT
             o.id  AS out_id,
             r.id  AS ret_id,
-            o.cabin AS cabin,
+            o.cabin AS out_cabin,
+            r.cabin AS ret_cabin,
             o.source AS out_source,
             r.source AS ret_source,
             o.miles AS out_miles,
@@ -93,8 +94,7 @@ def join_pairs(
             CAST(julianday(r.depart_date) - julianday(o.depart_date) AS INTEGER) AS nights
         FROM legs o
         JOIN legs r
-          ON o.cabin = r.cabin
-         AND o.origin IN ({placeholders_o})
+          ON o.origin IN ({placeholders_o})
          AND o.destination IN ({placeholders_d})
          AND r.origin IN ({placeholders_d})
          AND r.destination IN ({placeholders_o})
@@ -132,7 +132,8 @@ def join_pairs(
             out_fees_cents=row["out_fees"],
             ret_fees_cents=row["ret_fees"],
             passengers=pax,
-            cabin=row["cabin"],
+            out_cabin=row["out_cabin"],
+            ret_cabin=row["ret_cabin"],
             balances=balances,
         )
         new_state = "viable" if feas.bookable else "candidate"

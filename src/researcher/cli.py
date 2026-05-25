@@ -150,9 +150,9 @@ def list_pairs(state: str, limit: int, search_path: Path, balances_path: Path) -
         """
         SELECT p.id, p.nights, p.total_miles, p.total_fees_cents, p.bookable_from, p.state,
                ol.source AS out_src, ol.origin AS out_org, ol.destination AS out_dst,
-               ol.depart_date AS out_date, ol.cabin AS cabin, ol.seats_remaining AS out_seats,
+               ol.depart_date AS out_date, ol.cabin AS out_cabin, ol.seats_remaining AS out_seats,
                rl.source AS ret_src, rl.origin AS ret_org, rl.destination AS ret_dst,
-               rl.depart_date AS ret_date, rl.seats_remaining AS ret_seats
+               rl.depart_date AS ret_date, rl.cabin AS ret_cabin, rl.seats_remaining AS ret_seats
           FROM pairs p
           JOIN legs ol ON ol.id = p.out_leg_id
           JOIN legs rl ON rl.id = p.ret_leg_id
@@ -166,8 +166,9 @@ def list_pairs(state: str, limit: int, search_path: Path, balances_path: Path) -
         click.echo(f"(no pairs in state '{state}')")
         return
     for r in rows:
+        cabin_tag = r["out_cabin"] if r["out_cabin"] == r["ret_cabin"] else f"{r['out_cabin']}/{r['ret_cabin']}"
         click.echo(
-            f"#{r['id']:<5} [{r['cabin']:<8}] "
+            f"#{r['id']:<5} [{cabin_tag:<17}] "
             f"{r['out_org']}->{r['out_dst']} {r['out_date']} ({r['out_src']}, {r['out_seats']} seats) | "
             f"{r['ret_org']}->{r['ret_dst']} {r['ret_date']} ({r['ret_src']}, {r['ret_seats']} seats) | "
             f"{r['nights']}n | {r['total_miles']:,}mi + ${r['total_fees_cents']/100:.0f} "
