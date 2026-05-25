@@ -1,0 +1,43 @@
+trip:
+  passengers: 2
+  # One or more date windows, each with its own nights constraint.
+  # A pair must have both legs inside the SAME window; cross-window pairs
+  # are excluded by the nights filter anyway, but this keeps semantics tight.
+  windows:
+    - { start: 2099-06-01, end: 2099-07-01, nights: { min: 10, max: 14 } }
+    - { start: 2099-12-15, end: 2099-12-31, nights: { min: 7, max: 7 } }
+
+routing:
+  origins: [JFK]
+  destinations: [LHR, CDG]
+  allow_open_jaw: true
+  max_stops: 1
+  layover_minutes: { min: 90, max: 300 }
+
+cabins: [economy, premium, business]
+
+# seats.aero "source" identifiers (program/program-family) we'll poll.
+# Each source contributes legs; pricing.py maps source → (program, miles_chart, fees).
+sources:
+  - aeroplan
+  - united
+  - american
+  - alaska
+  - virginatlantic
+  - delta
+  - ana
+  - jal
+
+poll:
+  # How often to re-query each (source, origin, destination) tuple.
+  # seats.aero cached search is cheap; live search is rate-limited.
+  cached_interval_minutes: 15
+  live_interval_minutes: 360
+  # When this many nights remain in window, bump cadence
+  hot_window_days: 30
+  hot_interval_minutes: 5
+
+# Hard filters applied to every leg before it enters the pair joiner.
+leg_filters:
+  min_seats: 2
+  exclude_overnight_layovers: false

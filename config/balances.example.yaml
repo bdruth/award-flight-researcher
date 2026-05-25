@@ -1,0 +1,38 @@
+# Combined household balances, plus the transferable pools that can feed them.
+# pricing.py uses this to decide whether a pair is "bookable now" or
+# "bookable after transfer".
+
+direct:
+  aeroplan: 107839
+  american: 293137
+  united: 0
+  alaska: 0
+  ana: 0
+  jal: 0
+  virginatlantic: 0
+  delta: 0
+
+# Transferable pools and the airline programs each can feed (1:1 unless noted).
+# Used to compute "max effective balance" for each airline program.
+transferable:
+  chase_ur:
+    balance: 480258
+    targets: [aeroplan, united, virginatlantic]   # not ANA/JAL/AA
+  amex_mr:
+    balance: 144512
+    targets: [aeroplan, ana, virginatlantic, delta]
+  citi_ty:
+    balance: 71108
+    targets: [virginatlantic, jal]
+  capital_one:
+    balance: 67554
+    targets: [aeroplan, virginatlantic]
+
+# Cost ceilings: don't even alert if a pair exceeds these.
+limits:
+  max_fees_per_pax_usd: 300
+  # Optional cap on total miles per pax per cabin
+  max_miles_per_pax:
+    economy: 150000
+    premium: 200000
+    business: 250000

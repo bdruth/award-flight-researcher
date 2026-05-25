@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+.venv/
+.env
+data/
+config/search.yaml
+config/balances.yaml
+*.db
+*.db-journal
+.DS_Store
