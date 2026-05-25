@@ -34,34 +34,47 @@ transitions page you.
 
 ## Setup
 
+Requires [uv](https://docs.astral.sh/uv/).
+
 ```bash
-python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
+uv sync                                 # creates .venv, installs deps from uv.lock
 cp config/search.example.yaml config/search.yaml
 cp config/balances.example.yaml config/balances.yaml
-cp .env.example .env   # then fill in SEATSAERO_API_KEY + NTFY_TOPIC or Pushover keys
+cp .env.example .env                    # then fill in SEATSAERO_API_KEY + NTFY_TOPIC or Pushover keys
 ```
 
 Edit `config/search.yaml` and `config/balances.yaml` for your trip.
 
 ## Run
 
+Initialize the database (idempotent):
+
+```bash
+uv run researcher init-db
+```
+
 One-shot (poll → join → diff → alert, then exit):
 
 ```bash
-python -m researcher.cli run-once
+uv run researcher run-once
 ```
 
 Long-running loop (poll every N minutes):
 
 ```bash
-python -m researcher.cli watch --interval-minutes 15
+uv run researcher watch --interval-minutes 15
 ```
 
 Inspect current viable pairs:
 
 ```bash
-python -m researcher.cli pairs --state viable
+uv run researcher pairs --state viable
+```
+
+## Tests
+
+```bash
+uv run pytest
 ```
 
 ## State persistence

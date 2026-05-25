@@ -19,3 +19,8 @@ researcher = "researcher.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+]
