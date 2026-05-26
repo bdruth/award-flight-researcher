@@ -10,3 +10,4 @@ config/*.yaml
 *.db
 *.db-journal
 .DS_Store
+.claude/settings.local.json

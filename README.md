@@ -107,11 +107,13 @@ Two reasonable shapes:
 2. **Scheduled CI workflow** — `.gitea/workflows/poll.yml` runs `run-once` on
    every cron tick (default `*/15`). State (sqlite DB) plus `search.yaml` and
    `balances.yaml` are pulled from an S3-compatible bucket at job start and the
-   DB is pushed back at the end. Requires repo Action secrets:
-   `SEATSAERO_API_KEY`, `PUSHOVER_TOKEN`, `PUSHOVER_USER`,
-   `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` (S3/MinIO).
+   DB is pushed back at the end.
 
-The workflow targets a self-hosted runner with LAN access to the bucket.
+   Repo Actions variables drive the storage location: `S3_ENDPOINT`,
+   `S3_BUCKET`, and optional `S3_PREFIX`. Required secrets: `SEATSAERO_API_KEY`,
+   `PUSHOVER_TOKEN`, `PUSHOVER_USER`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`.
+
+The workflow targets a self-hosted runner that can reach the bucket.
 
 ## State persistence
 
