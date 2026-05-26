@@ -240,6 +240,43 @@ def test_layover_filter_excludes_pairs_with_failing_legs(conn):
     assert stats.pairs_invalidated == 1
 
 
+def test_alert_batch_dedups_per_outbound_and_pareto_filters(conn):
+    # Setup: one outbound ORD→HND on 12/18 paired with 3 valid return dates (13-15 nights).
+    # All viable, same miles. After dedup we expect ONE pair (cheapest+shortest return).
+    pairs_mod.upsert_leg(conn, _leg("ORD", "HND", date(2026, 12, 18)))
+    for ret_date in (date(2026, 12, 31), date(2027, 1, 1), date(2027, 1, 2)):
+        pairs_mod.upsert_leg(conn, _leg("HND", "ORD", ret_date))
+    # Set best-trip durations so we can tell which return "wins" the dedup.
+    conn.execute("UPDATE legs SET duration_min = 700 WHERE origin = 'ORD' AND destination = 'HND'")
+    conn.execute("UPDATE legs SET duration_min = 700 WHERE depart_date = '2026-12-31'")  # shortest return
+    conn.execute("UPDATE legs SET duration_min = 750 WHERE depart_date = '2027-01-01'")
+    conn.execute("UPDATE legs SET duration_min = 800 WHERE depart_date = '2027-01-02'")
+    pairs_mod.join_pairs(conn, _search(), _balances())
+
+    batch = alerts_mod.build_alerts_for_new_viable(conn)
+    # 3 viable pairs collapsed to 1 (the 12/18 → 12/31 one wins on shortest duration).
+    assert len(batch.to_send) == 1
+    assert len(batch.suppressed_pair_ids) == 2
+    assert "2026-12-31" in batch.to_send[0].title
+
+
+def test_alert_batch_pareto_drops_dominated_pair(conn):
+    # Two distinct outbound flights (so dedup doesn't collapse them), one strictly worse
+    # than the other on BOTH miles and duration. The dominated one must be suppressed.
+    pairs_mod.upsert_leg(conn, _leg("ORD", "HND", date(2026, 12, 18), miles=55_000))
+    pairs_mod.upsert_leg(conn, _leg("ORD", "HND", date(2026, 12, 19), miles=70_000))  # worse miles
+    pairs_mod.upsert_leg(conn, _leg("HND", "ORD", date(2027, 1, 1),  miles=55_000))
+    conn.execute("UPDATE legs SET duration_min = 700 WHERE depart_date = '2026-12-18'")
+    conn.execute("UPDATE legs SET duration_min = 900 WHERE depart_date = '2026-12-19'")  # worse duration too
+    conn.execute("UPDATE legs SET duration_min = 700 WHERE origin = 'HND'")
+    pairs_mod.join_pairs(conn, _search(), _balances())
+
+    batch = alerts_mod.build_alerts_for_new_viable(conn)
+    assert len(batch.to_send) == 1
+    assert len(batch.suppressed_pair_ids) == 1
+    assert "2026-12-18" in batch.to_send[0].title
+
+
 def test_alerted_pair_stays_alerted_on_rejoin(conn):
     # Regression: re-joining a still-feasible pair previously overwrote its
     # 'alerted' state with 'viable', causing it to re-page every cycle.
@@ -247,14 +284,15 @@ def test_alerted_pair_stays_alerted_on_rejoin(conn):
     pairs_mod.upsert_leg(conn, _leg("HND", "ORD", date(2027, 1, 1)))
     pairs_mod.join_pairs(conn, _search(), _balances())
 
-    pending = alerts_mod.build_alerts_for_new_viable(conn)
-    assert len(pending) == 1
-    alerts_mod.mark_alerted(conn, [a.pair_id for a in pending])
+    batch = alerts_mod.build_alerts_for_new_viable(conn)
+    assert len(batch.to_send) == 1
+    alerts_mod.mark_alerted(conn, batch.all_pair_ids)
 
     # Re-join: same legs, still feasible. Must not re-queue the alert.
     stats = pairs_mod.join_pairs(conn, _search(), _balances())
     assert stats.pairs_promoted_viable == 0
-    assert alerts_mod.build_alerts_for_new_viable(conn) == []
+    follow_up = alerts_mod.build_alerts_for_new_viable(conn)
+    assert follow_up.to_send == [] and follow_up.suppressed_pair_ids == []
 
     state = conn.execute("SELECT state FROM pairs").fetchone()[0]
     assert state == "alerted"

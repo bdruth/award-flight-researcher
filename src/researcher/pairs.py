@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 
 from .config import BalancesConfig, SearchConfig
 from .pricing import best_pax_split, pair_feasibility
-from .seatsaero import SeatsAeroClient, any_trip_within_layover_window
+from .seatsaero import SeatsAeroClient, any_trip_within_layover_window, best_trip_quality
 
 log = logging.getLogger(__name__)
 
@@ -252,9 +252,13 @@ def enrich_layovers(
         except Exception as e:
             log.warning("trip fetch for leg %d failed: %s", r["id"], e)
             continue
+        q = best_trip_quality(trips)
         conn.execute(
-            "UPDATE legs SET segments_json = ? WHERE id = ?",
-            (json.dumps(trips), r["id"]),
+            """
+            UPDATE legs SET segments_json = ?, duration_min = ?, stops = ?, carriers = ?
+             WHERE id = ?
+            """,
+            (json.dumps(trips), q["duration_min"], q["stops"], q["carriers"], r["id"]),
         )
         fetched += 1
 

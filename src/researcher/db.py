@@ -93,6 +93,7 @@ def _migrate_add_columns(conn: sqlite3.Connection) -> None:
         ("availability_id", "ALTER TABLE legs ADD COLUMN availability_id TEXT"),
         ("segments_json", "ALTER TABLE legs ADD COLUMN segments_json TEXT"),
         ("meets_layover_filter", "ALTER TABLE legs ADD COLUMN meets_layover_filter INTEGER"),
+        ("carriers", "ALTER TABLE legs ADD COLUMN carriers TEXT"),
     ):
         if col not in existing:
             conn.execute(ddl)

@@ -97,12 +97,16 @@ def _poll_once(
         synth, stats.pairs_seen, stats.pairs_new, stats.pairs_promoted_viable, stats.pairs_invalidated,
     )
 
-    new_alerts = alerts_mod.build_alerts_for_new_viable(conn)
-    if new_alerts:
-        alerts_mod.dispatch(env, new_alerts)
+    batch = alerts_mod.build_alerts_for_new_viable(conn)
+    if batch.to_send:
+        alerts_mod.dispatch(env, batch.to_send)
+    if batch.all_pair_ids:
         with db_mod.transaction(conn):
-            alerts_mod.mark_alerted(conn, [a.pair_id for a in new_alerts])
-        log.info("dispatched %d alert(s)", len(new_alerts))
+            alerts_mod.mark_alerted(conn, batch.all_pair_ids)
+        log.info(
+            "dispatched %d alert(s); suppressed %d (deduped/dominated)",
+            len(batch.to_send), len(batch.suppressed_pair_ids),
+        )
 
 
 @click.group()

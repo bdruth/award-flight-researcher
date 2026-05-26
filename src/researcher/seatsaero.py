@@ -148,6 +148,19 @@ def _parse_date(v) -> date | None:
         return None
 
 
+def best_trip_quality(trips: list[dict]) -> dict:
+    """Pick the shortest-duration trip variant and return its quality fields.
+    Returned dict has keys: duration_min, stops, carriers (any may be None)."""
+    if not trips:
+        return {"duration_min": None, "stops": None, "carriers": None}
+    best = min(trips, key=lambda t: t.get("TotalDuration") or 10**9)
+    return {
+        "duration_min": best.get("TotalDuration"),
+        "stops": best.get("Stops"),
+        "carriers": best.get("Carriers"),
+    }
+
+
 def trip_layovers_minutes(trip: dict) -> list[int]:
     """Connection times in minutes between consecutive segments of one trip.
     Empty for direct (single-segment) trips."""
