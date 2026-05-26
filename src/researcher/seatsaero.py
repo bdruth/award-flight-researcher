@@ -176,8 +176,14 @@ def any_trip_within_layover_window(
     return False
 
 
-def availability_url(*, origin: str, destination: str, depart_date: date, source: str) -> str:
-    """Front-end search URL that scopes results to one route+date+source."""
+def availability_url(availability_id: str) -> str:
+    """Direct deep link to a specific availability record on seats.aero."""
+    return f"https://seats.aero/i/{availability_id}"
+
+
+def search_url(*, origin: str, destination: str, depart_date: date, source: str) -> str:
+    """Fallback search-page URL scoped to one route+date+source.
+    Used when an availability_id isn't available (e.g. synthetic 'mixed' legs)."""
     iso = depart_date.isoformat()
     return (
         "https://seats.aero/search"

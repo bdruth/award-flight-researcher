@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 import httpx
 
 from .config import Env
-from .seatsaero import availability_url
+from .seatsaero import availability_url, search_url
 
 log = logging.getLogger(__name__)
 ISO = "%Y-%m-%dT%H:%M:%SZ"
@@ -31,11 +31,11 @@ def build_alerts_for_new_viable(conn: sqlite3.Connection) -> list[Alert]:
                ol.source AS out_src, ol.origin AS out_org, ol.destination AS out_dst,
                ol.depart_date AS out_date, ol.cabin AS out_cabin,
                ol.seats_remaining AS out_seats, ol.miles AS out_miles, ol.fees_cents AS out_fees,
-               ol.last_snapshot_json AS out_snap,
+               ol.last_snapshot_json AS out_snap, ol.availability_id AS out_avail,
                rl.source AS ret_src, rl.origin AS ret_org, rl.destination AS ret_dst,
                rl.depart_date AS ret_date, rl.cabin AS ret_cabin,
                rl.seats_remaining AS ret_seats, rl.miles AS ret_miles, rl.fees_cents AS ret_fees,
-               rl.last_snapshot_json AS ret_snap
+               rl.last_snapshot_json AS ret_snap, rl.availability_id AS ret_avail
           FROM pairs p
           JOIN legs ol ON ol.id = p.out_leg_id
           JOIN legs rl ON rl.id = p.ret_leg_id
@@ -54,8 +54,8 @@ def build_alerts_for_new_viable(conn: sqlite3.Connection) -> list[Alert]:
         )
         out_desc = _describe_leg(r["out_cabin"], r["out_seats"], r["out_miles"], r["out_fees"], r["out_snap"])
         ret_desc = _describe_leg(r["ret_cabin"], r["ret_seats"], r["ret_miles"], r["ret_fees"], r["ret_snap"])
-        out_url = _leg_url(r["out_cabin"], r["out_src"], r["out_org"], r["out_dst"], r["out_date"])
-        ret_url = _leg_url(r["ret_cabin"], r["ret_src"], r["ret_org"], r["ret_dst"], r["ret_date"])
+        out_url = _leg_url(r["out_avail"], r["out_cabin"], r["out_src"], r["out_org"], r["out_dst"], r["out_date"])
+        ret_url = _leg_url(r["ret_avail"], r["ret_cabin"], r["ret_src"], r["ret_org"], r["ret_dst"], r["ret_date"])
         body = (
             f"{r['nights']} nights | pool: {r['bookable_from']}\n"
             f"OUT: {r['out_src']} {out_desc}\n  {out_url}\n"
@@ -66,11 +66,13 @@ def build_alerts_for_new_viable(conn: sqlite3.Connection) -> list[Alert]:
     return alerts
 
 
-def _leg_url(cabin: str, source: str, origin: str, dest: str, depart_iso: str) -> str:
+def _leg_url(availability_id: str | None, cabin: str, source: str, origin: str, dest: str, depart_iso: str) -> str:
     from datetime import date
-    # Mixed legs span multiple per-cabin bookings; use the cabin-agnostic search URL.
+    if availability_id:
+        return availability_url(availability_id)
+    # Mixed/synthetic legs have no availability_id — fall back to the search page.
     src = source.split("+")[0] if cabin == "mixed" else source
-    return availability_url(origin=origin, destination=dest, depart_date=date.fromisoformat(depart_iso), source=src)
+    return search_url(origin=origin, destination=dest, depart_date=date.fromisoformat(depart_iso), source=src)
 
 
 def _describe_leg(cabin: str, seats: int, miles: int, fees_cents: int, snap_json: str | None) -> str:

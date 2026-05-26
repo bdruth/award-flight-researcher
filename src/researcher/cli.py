@@ -162,8 +162,10 @@ def list_pairs(state: str, limit: int, search_path: Path, balances_path: Path) -
         SELECT p.id, p.nights, p.total_miles, p.total_fees_cents, p.bookable_from, p.state,
                ol.source AS out_src, ol.origin AS out_org, ol.destination AS out_dst,
                ol.depart_date AS out_date, ol.cabin AS out_cabin, ol.seats_remaining AS out_seats,
+               ol.availability_id AS out_avail,
                rl.source AS ret_src, rl.origin AS ret_org, rl.destination AS ret_dst,
-               rl.depart_date AS ret_date, rl.cabin AS ret_cabin, rl.seats_remaining AS ret_seats
+               rl.depart_date AS ret_date, rl.cabin AS ret_cabin, rl.seats_remaining AS ret_seats,
+               rl.availability_id AS ret_avail
           FROM pairs p
           JOIN legs ol ON ol.id = p.out_leg_id
           JOIN legs rl ON rl.id = p.ret_leg_id
@@ -181,15 +183,21 @@ def list_pairs(state: str, limit: int, search_path: Path, balances_path: Path) -
         cabin_tag = r["out_cabin"] if r["out_cabin"] == r["ret_cabin"] else f"{r['out_cabin']}/{r['ret_cabin']}"
         out_seats_str = f"split×{r['out_seats']}" if r["out_cabin"] == "mixed" else f"{r['out_seats']} seats"
         ret_seats_str = f"split×{r['ret_seats']}" if r["ret_cabin"] == "mixed" else f"{r['ret_seats']} seats"
-        out_url = seatsaero.availability_url(
-            origin=r["out_org"], destination=r["out_dst"],
-            depart_date=date.fromisoformat(r["out_date"]),
-            source=r["out_src"].split("+")[0],
+        out_url = (
+            seatsaero.availability_url(r["out_avail"]) if r["out_avail"]
+            else seatsaero.search_url(
+                origin=r["out_org"], destination=r["out_dst"],
+                depart_date=date.fromisoformat(r["out_date"]),
+                source=r["out_src"].split("+")[0],
+            )
         )
-        ret_url = seatsaero.availability_url(
-            origin=r["ret_org"], destination=r["ret_dst"],
-            depart_date=date.fromisoformat(r["ret_date"]),
-            source=r["ret_src"].split("+")[0],
+        ret_url = (
+            seatsaero.availability_url(r["ret_avail"]) if r["ret_avail"]
+            else seatsaero.search_url(
+                origin=r["ret_org"], destination=r["ret_dst"],
+                depart_date=date.fromisoformat(r["ret_date"]),
+                source=r["ret_src"].split("+")[0],
+            )
         )
         click.echo(
             f"#{r['id']:<5} [{cabin_tag:<17}] "

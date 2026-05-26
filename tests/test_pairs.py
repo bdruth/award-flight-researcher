@@ -15,7 +15,7 @@ from researcher.config import (
     TransferablePool,
     TripConfig,
 )
-from researcher.seatsaero import LegRow, _taxes_to_cents, any_trip_within_layover_window, availability_url
+from researcher.seatsaero import LegRow, _taxes_to_cents, any_trip_within_layover_window, availability_url, search_url
 
 
 def _search(allow_open_jaw: bool = True, cabins: tuple[str, ...] = ("economy",)) -> SearchConfig:
@@ -215,8 +215,12 @@ def test_any_trip_within_layover_window():
     assert any_trip_within_layover_window(long, layover_min=90, layover_max=300) is False
 
 
-def test_availability_url_shape():
-    url = availability_url(origin="ORD", destination="HND", depart_date=date(2026, 12, 18), source="aeroplan")
+def test_availability_url_is_per_record_deep_link():
+    assert availability_url("3E9FwGX2njnRK1yFUk4vOQBnWWu") == "https://seats.aero/i/3E9FwGX2njnRK1yFUk4vOQBnWWu"
+
+
+def test_search_url_fallback_shape():
+    url = search_url(origin="ORD", destination="HND", depart_date=date(2026, 12, 18), source="aeroplan")
     assert "origin_airport=ORD" in url
     assert "destination_airport=HND" in url
     assert "start_date=2026-12-18" in url and "end_date=2026-12-18" in url
