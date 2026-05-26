@@ -11,12 +11,17 @@ from dotenv import load_dotenv
 
 
 @dataclass(frozen=True)
-class TripConfig:
-    passengers: int
+class DateWindow:
+    start: date
+    end: date
     nights_min: int
     nights_max: int
-    window_start: date
-    window_end: date
+
+
+@dataclass(frozen=True)
+class TripConfig:
+    passengers: int
+    windows: tuple[DateWindow, ...]
 
 
 @dataclass(frozen=True)
@@ -96,14 +101,17 @@ def load_search(path: Path) -> SearchConfig:
     r = data["routing"]
     p = data["poll"]
     lf = data["leg_filters"]
+    windows = tuple(
+        DateWindow(
+            start=_to_date(w["start"]),
+            end=_to_date(w["end"]),
+            nights_min=int(w["nights"]["min"]),
+            nights_max=int(w["nights"]["max"]),
+        )
+        for w in t["windows"]
+    )
     return SearchConfig(
-        trip=TripConfig(
-            passengers=int(t["passengers"]),
-            nights_min=int(t["nights"]["min"]),
-            nights_max=int(t["nights"]["max"]),
-            window_start=_to_date(t["window"]["start"]),
-            window_end=_to_date(t["window"]["end"]),
-        ),
+        trip=TripConfig(passengers=int(t["passengers"]), windows=windows),
         routing=RoutingConfig(
             origins=tuple(r["origins"]),
             destinations=tuple(r["destinations"]),

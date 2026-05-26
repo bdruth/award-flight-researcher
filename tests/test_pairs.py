@@ -8,6 +8,7 @@ from researcher import db as db_mod
 from researcher import pairs as pairs_mod
 from researcher.config import (
     BalancesConfig,
+    DateWindow,
     LegFilters,
     PollConfig,
     RoutingConfig,
@@ -18,15 +19,15 @@ from researcher.config import (
 from researcher.seatsaero import LegRow, _taxes_to_cents, any_trip_within_layover_window, availability_url, search_url
 
 
-def _search(allow_open_jaw: bool = True, cabins: tuple[str, ...] = ("economy",)) -> SearchConfig:
+def _search(
+    allow_open_jaw: bool = True,
+    cabins: tuple[str, ...] = ("economy",),
+    windows: tuple[DateWindow, ...] = (
+        DateWindow(start=date(2026, 12, 15), end=date(2027, 1, 15), nights_min=13, nights_max=15),
+    ),
+) -> SearchConfig:
     return SearchConfig(
-        trip=TripConfig(
-            passengers=4,
-            nights_min=13,
-            nights_max=15,
-            window_start=date(2026, 12, 15),
-            window_end=date(2027, 1, 15),
-        ),
+        trip=TripConfig(passengers=4, windows=windows),
         routing=RoutingConfig(
             origins=("ORD",),
             destinations=("HND", "NRT"),
@@ -275,6 +276,26 @@ def test_alert_batch_pareto_drops_dominated_pair(conn):
     assert len(batch.to_send) == 1
     assert len(batch.suppressed_pair_ids) == 1
     assert "2026-12-18" in batch.to_send[0].title
+
+
+def test_multi_window_with_different_nights_per_window(conn):
+    # Two windows with different nights constraints:
+    #   A: Dec/Jan, 13-15 nights
+    #   B: Mar, 10 nights only (depart on first day, return on last)
+    windows = (
+        DateWindow(start=date(2026, 12, 15), end=date(2027, 1, 15), nights_min=13, nights_max=15),
+        DateWindow(start=date(2027, 3, 13), end=date(2027, 3, 23), nights_min=10, nights_max=10),
+    )
+    # Pair satisfying window A
+    pairs_mod.upsert_leg(conn, _leg("ORD", "HND", date(2026, 12, 18)))
+    pairs_mod.upsert_leg(conn, _leg("HND", "ORD", date(2027, 1, 1)))   # 14 nights → A
+    # Pair satisfying window B
+    pairs_mod.upsert_leg(conn, _leg("ORD", "HND", date(2027, 3, 13)))
+    pairs_mod.upsert_leg(conn, _leg("HND", "ORD", date(2027, 3, 23)))  # 10 nights → B
+    # Cross-window mismatch: dates in different windows; nights makes no sense.
+    # 12/18 outbound + 3/23 return = 95 nights, fails both windows' nights filter.
+    stats = pairs_mod.join_pairs(conn, _search(windows=windows), _balances())
+    assert stats.pairs_new == 2  # exactly the two intended pairs
 
 
 def test_alerted_pair_stays_alerted_on_rejoin(conn):

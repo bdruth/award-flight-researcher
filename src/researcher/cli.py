@@ -47,37 +47,38 @@ def _poll_once(
             pairs_directional.append((d, o))
 
     with seatsaero.SeatsAeroClient(env.seatsaero_api_key) as client:
-        for origin, dest in pairs_directional:
-            started = datetime.now(timezone.utc).strftime(ISO)
-            try:
-                payload = client.cached_search(
-                    origin=origin,
-                    destination=dest,
-                    start=search.trip.window_start,
-                    end=search.trip.window_end,
-                    sources=search.sources,
-                )
-            except Exception as e:
-                log.warning("poll %s→%s failed: %s", origin, dest, e)
+        for window in search.trip.windows:
+            for origin, dest in pairs_directional:
+                started = datetime.now(timezone.utc).strftime(ISO)
+                try:
+                    payload = client.cached_search(
+                        origin=origin,
+                        destination=dest,
+                        start=window.start,
+                        end=window.end,
+                        sources=search.sources,
+                    )
+                except Exception as e:
+                    log.warning("poll %s→%s [%s..%s] failed: %s", origin, dest, window.start, window.end, e)
+                    conn.execute(
+                        "INSERT INTO poll_log (source, origin, destination, started_at, finished_at, error) VALUES (?,?,?,?,?,?)",
+                        ("*", origin, dest, started, datetime.now(timezone.utc).strftime(ISO), str(e)),
+                    )
+                    continue
+                count = 0
+                with db_mod.transaction(conn):
+                    for leg in seatsaero.normalize(
+                        payload, cabins=search.cabins, min_seats=search.leg_filters.min_seats
+                    ):
+                        if leg.source not in search.sources:
+                            continue
+                        pairs_mod.upsert_leg(conn, leg)
+                        count += 1
                 conn.execute(
-                    "INSERT INTO poll_log (source, origin, destination, started_at, finished_at, error) VALUES (?,?,?,?,?,?)",
-                    ("*", origin, dest, started, datetime.now(timezone.utc).strftime(ISO), str(e)),
+                    "INSERT INTO poll_log (source, origin, destination, started_at, finished_at, result_count) VALUES (?,?,?,?,?,?)",
+                    ("*", origin, dest, started, datetime.now(timezone.utc).strftime(ISO), count),
                 )
-                continue
-            count = 0
-            with db_mod.transaction(conn):
-                for leg in seatsaero.normalize(
-                    payload, cabins=search.cabins, min_seats=search.leg_filters.min_seats
-                ):
-                    if leg.source not in search.sources:
-                        continue
-                    pairs_mod.upsert_leg(conn, leg)
-                    count += 1
-            conn.execute(
-                "INSERT INTO poll_log (source, origin, destination, started_at, finished_at, result_count) VALUES (?,?,?,?,?,?)",
-                ("*", origin, dest, started, datetime.now(timezone.utc).strftime(ISO), count),
-            )
-            log.info("polled %s→%s: %d legs ingested", origin, dest, count)
+                log.info("polled %s→%s [%s..%s]: %d legs ingested", origin, dest, window.start, window.end, count)
 
         with db_mod.transaction(conn):
             fetched = pairs_mod.enrich_layovers(

@@ -72,14 +72,29 @@ def join_pairs(
     pax = trip.passengers
     now = _now()
 
-    # Candidate join: same cabin, fresh enough, both have ≥ pax seats, nights ∈ window
-    # We delegate the nights math to SQL via julianday().
     out_dests = tuple(routing.destinations)
-    in_origins = tuple(routing.destinations)
     origins = tuple(routing.origins)
-
     placeholders_o = ",".join("?" * len(origins))
     placeholders_d = ",".join("?" * len(out_dests))
+
+    # Each window contributes one OR-clause; both legs must fall within the SAME window
+    # so a 10-night-window pair can't share dates with a 13-15-night-window pair.
+    window_clauses: list[str] = []
+    window_params: list = []
+    for w in trip.windows:
+        window_clauses.append(
+            "("
+            "date(o.depart_date) BETWEEN date(?) AND date(?) "
+            "AND date(r.depart_date) BETWEEN date(?) AND date(?) "
+            "AND CAST(julianday(r.depart_date) - julianday(o.depart_date) AS INTEGER) BETWEEN ? AND ?"
+            ")"
+        )
+        window_params.extend([
+            w.start.isoformat(), w.end.isoformat(),
+            w.start.isoformat(), w.end.isoformat(),
+            w.nights_min, w.nights_max,
+        ])
+    window_predicate = "(" + " OR ".join(window_clauses) + ")" if window_clauses else "0"
 
     rows = conn.execute(
         f"""
@@ -109,19 +124,14 @@ def join_pairs(
          AND r.destination IN ({placeholders_o})
          AND o.seats_remaining >= ?
          AND r.seats_remaining >= ?
-         AND date(o.depart_date) BETWEEN date(?) AND date(?)
-         AND date(r.depart_date) BETWEEN date(?) AND date(?)
-         AND CAST(julianday(r.depart_date) - julianday(o.depart_date) AS INTEGER)
-             BETWEEN ? AND ?
+         AND {window_predicate}
          AND (o.meets_layover_filter IS NULL OR o.meets_layover_filter = 1)
          AND (r.meets_layover_filter IS NULL OR r.meets_layover_filter = 1)
         """,
         (
             *origins, *out_dests, *out_dests, *origins,
             pax, pax,
-            trip.window_start.isoformat(), trip.window_end.isoformat(),
-            trip.window_start.isoformat(), trip.window_end.isoformat(),
-            trip.nights_min, trip.nights_max,
+            *window_params,
         ),
     ).fetchall()
 
