@@ -46,6 +46,7 @@ class PollConfig:
 class LegFilters:
     min_seats: int
     exclude_overnight_layovers: bool
+    direct_only: bool = False
 
 
 @dataclass(frozen=True)
@@ -131,6 +132,7 @@ def load_search(path: Path) -> SearchConfig:
         leg_filters=LegFilters(
             min_seats=int(lf["min_seats"]),
             exclude_overnight_layovers=bool(lf.get("exclude_overnight_layovers", False)),
+            direct_only=bool(lf.get("direct_only", False)),
         ),
     )
 

@@ -58,6 +58,13 @@ def _poll_once(
                         end=window.end,
                         sources=search.sources,
                     )
+                except seatsaero.RateLimited as e:
+                    conn.execute(
+                        "INSERT INTO poll_log (source, origin, destination, started_at, finished_at, error) VALUES (?,?,?,?,?,?)",
+                        ("*", origin, dest, started, datetime.now(timezone.utc).strftime(ISO), str(e)),
+                    )
+                    log.error("seats.aero daily quota exhausted (X-RateLimit-Remaining=%s); aborting cycle", e.remaining)
+                    raise
                 except Exception as e:
                     log.warning("poll %s→%s [%s..%s] failed: %s", origin, dest, window.start, window.end, e)
                     conn.execute(
@@ -68,7 +75,10 @@ def _poll_once(
                 count = 0
                 with db_mod.transaction(conn):
                     for leg in seatsaero.normalize(
-                        payload, cabins=search.cabins, min_seats=search.leg_filters.min_seats
+                        payload,
+                        cabins=search.cabins,
+                        min_seats=search.leg_filters.min_seats,
+                        direct_only=search.leg_filters.direct_only,
                     ):
                         if leg.source not in search.sources:
                             continue

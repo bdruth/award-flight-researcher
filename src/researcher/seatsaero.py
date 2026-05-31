@@ -34,6 +34,16 @@ class LegRow:
     availability_id: str | None = None
 
 
+class RateLimited(Exception):
+    """seats.aero returned 429 — the daily quota is exhausted (resets midnight UTC).
+    The cycle should abort: every remaining call will also 429 and burn nothing useful."""
+
+    def __init__(self, url: str, remaining: str | None = None):
+        self.url = url
+        self.remaining = remaining
+        super().__init__(f"429 from {url} (X-RateLimit-Remaining={remaining})")
+
+
 class SeatsAeroClient:
     def __init__(self, api_key: str, timeout: float = 30.0):
         self._client = httpx.Client(
@@ -51,10 +61,18 @@ class SeatsAeroClient:
     def __exit__(self, *exc) -> None:
         self.close()
 
+    def _check(self, r: httpx.Response) -> None:
+        remaining = r.headers.get("X-RateLimit-Remaining")
+        if remaining is not None:
+            log.info("seats.aero quota remaining: %s (after %s)", remaining, r.request.url.path)
+        if r.status_code == 429:
+            raise RateLimited(str(r.request.url), remaining)
+        r.raise_for_status()
+
     def trip(self, availability_id: str) -> list[dict]:
         """Fetch trip variants (each with per-segment detail) for an availability."""
         r = self._client.get(f"/trips/{availability_id}")
-        r.raise_for_status()
+        self._check(r)
         return r.json().get("data", []) or []
 
     def cached_search(
@@ -82,7 +100,7 @@ class SeatsAeroClient:
         while True:
             params["skip"] = skip
             r = self._client.get("/search", params=params)
-            r.raise_for_status()
+            self._check(r)
             payload = r.json()
             batch = payload.get("data", [])
             out.extend(batch)
@@ -97,6 +115,7 @@ def normalize(
     *,
     cabins: Iterable[str],
     min_seats: int,
+    direct_only: bool = False,
 ) -> Iterator[LegRow]:
     """Flatten seats.aero search rows into one LegRow per (row, cabin)."""
     for row in payload:
@@ -114,6 +133,8 @@ def normalize(
                 continue
             _, avail_f, miles_f, taxes_f, direct_f, seats_f = fields
             if not row.get(avail_f):
+                continue
+            if direct_only and not bool(row.get(direct_f)):
                 continue
             seats = int(row.get(seats_f) or 0)
             if seats < min_seats:

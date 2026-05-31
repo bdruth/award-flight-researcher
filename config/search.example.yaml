@@ -41,3 +41,6 @@ poll:
 leg_filters:
   min_seats: 2
   exclude_overnight_layovers: false
+  # If true, only nonstop per-cabin offers are ingested (uses seats.aero's
+  # per-cabin "Direct" flag; no /trips enrichment required).
+  direct_only: false

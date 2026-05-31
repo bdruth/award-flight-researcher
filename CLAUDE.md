@@ -22,7 +22,7 @@ The CLI entry point is the `researcher` script declared in `pyproject.toml` (`re
 
 Three runtime inputs, all gitignored (`config/*.yaml` with `!config/*.example.yaml` override) — copy from the `.example` files:
 
-- `config/search.yaml` — `trip.windows` (list; each window has its own `start`/`end`/`nights` bounds), routing, cabins, seats.aero `sources` to poll, leg filters. The `poll:` block exists in the example but is currently dead code.
+- `config/search.yaml` — `trip.windows` (list; each window has its own `start`/`end`/`nights` bounds), routing, cabins, seats.aero `sources` to poll, leg filters. `leg_filters.direct_only` (optional, default `false`) drops non-direct per-cabin offers at ingestion using the seats.aero per-cabin `Direct` flag — no `/trips` enrichment required. The `poll:` block exists in the example but is currently dead code.
 - `config/balances.yaml` — direct airline-program balances + transferable pool balances with their target programs, plus cost ceilings (`max_fees_per_pax_usd`, `max_miles_per_pax[cabin]`).
 - `.env` — `SEATSAERO_API_KEY` is required; pick `NTFY_TOPIC` (+ optional `NTFY_SERVER`) and/or `PUSHOVER_TOKEN`+`PUSHOVER_USER` for alerting; optional `RESEARCHER_DB_PATH`, `RESEARCHER_LOG_LEVEL`.
 
@@ -94,6 +94,7 @@ Every transition is appended to `pair_events` (`old_state, new_state, ts, note`)
 - **Layover filter participates in the join**: `meets_layover_filter` is recomputed every cycle from `segments_json` against the *current* config, and the join uses `(IS NULL OR = 1)` so un-enriched legs (and synthetic mixed legs) pass through until enriched.
 - **Open-jaw filtering** happens in Python after the SQL join. The SQL itself always permits open-jaw because origins/destinations are matched against the full sets.
 - **Alert suppression must mark suppressed pairs alerted** — `cli._poll_once` calls `mark_alerted(batch.all_pair_ids)`, not just winners, or the dedup loop would re-process them forever.
+- **seats.aero Pro quota is 1000 calls/calendar day** (resets midnight UTC), tracked in the `X-RateLimit-Remaining` response header. Each cycle burns ~72 search calls (windows × routes × directions) plus one `/trips` call per newly-discovered leg, so cron cadence must keep total daily calls under 1000 across all matrix entries sharing the API key. A 429 on any call raises `seatsaero.RateLimited`, which aborts the whole cycle (every remaining call would also 429); `run-once` exits non-zero so the CI job fails loudly instead of silently masking the lockout.
 
 ### Where to add functionality
 
@@ -113,4 +114,4 @@ Tests live in `tests/test_pairs.py` and run against a real sqlite database in `t
 Two shapes:
 
 1. **`researcher watch` long-running** on a host with persistent disk for the sqlite DB.
-2. **Scheduled CI** via `.gitea/workflows/poll.yml`: cron `*/15`, pulls `search.yaml` / `balances.yaml` / `researcher.db` from an S3-compatible bucket, runs `init-db` + `run-once`, pushes the DB back. Repo Actions variables drive the storage location: `S3_ENDPOINT` (e.g. `https://your-minio.example`), `S3_BUCKET`, and optional `S3_PREFIX` (defaults to `award-flight-researcher`). Required secrets: `SEATSAERO_API_KEY`, `PUSHOVER_TOKEN`, `PUSHOVER_USER`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`. The workflow targets a self-hosted runner that can reach the bucket.
+2. **Scheduled CI** via `.gitea/workflows/poll.yml`: cron `*/15`, runs one matrix job per region. Matrix entries come from a `setup` job that passes through the `POLL_MATRIX` Actions variable (so the region list isn't committed). Each entry is `{ name, search, db }`; the job pulls `<search>` (renamed to `config/search.yaml` for the run) + the shared `balances.yaml` + `<db>` from MinIO, runs `init-db` + `run-once` with `RESEARCHER_DB_PATH=data/<db>`, then pushes the DB back. Concurrency is scoped per region (`poll-<name>`), so regions run in parallel without racing each other's DB. Required Actions variables: `S3_ENDPOINT`, `S3_BUCKET`, `S3_PREFIX` (defaults to `award-flight-researcher`), `POLL_MATRIX` (JSON array). Required secrets: `SEATSAERO_API_KEY`, `PUSHOVER_TOKEN`, `PUSHOVER_USER`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`. Each region has its own DB and alert stream — `balances.yaml` is shared, so multi-region setups assume balance pools don't need to be partitioned across regions.

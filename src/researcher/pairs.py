@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 
 from .config import BalancesConfig, SearchConfig
 from .pricing import best_pax_split, pair_feasibility
-from .seatsaero import SeatsAeroClient, any_trip_within_layover_window, best_trip_quality
+from .seatsaero import RateLimited, SeatsAeroClient, any_trip_within_layover_window, best_trip_quality
 
 log = logging.getLogger(__name__)
 
@@ -259,6 +259,8 @@ def enrich_layovers(
     for r in to_fetch:
         try:
             trips = client.trip(r["availability_id"])
+        except RateLimited:
+            raise
         except Exception as e:
             log.warning("trip fetch for leg %d failed: %s", r["id"], e)
             continue
