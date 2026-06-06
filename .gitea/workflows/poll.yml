@@ -21,7 +21,9 @@ jobs:
       matrix: ${{ steps.m.outputs.matrix }}
     steps:
       - id: m
-        run: echo "matrix=${{ vars.POLL_MATRIX }}" >> "$GITHUB_OUTPUT"
+        run: echo "matrix=$POLL_MATRIX" >> "$GITHUB_OUTPUT"
+        env:
+          POLL_MATRIX: ${{ vars.POLL_MATRIX }}
 
   poll:
     needs: setup
