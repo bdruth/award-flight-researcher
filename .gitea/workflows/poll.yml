@@ -52,7 +52,8 @@ jobs:
 
       - name: Fetch config from MinIO
         run: |
-          mc cp "homelab/$S3_BUCKET/$S3_PREFIX/${{ matrix.region.search }}" config/search.yaml
+          SEARCH_FILE="${{ matrix.region.search }}"
+          mc cp "homelab/$S3_BUCKET/$S3_PREFIX/${SEARCH_FILE:-search.yaml}" config/search.yaml
           mc cp "homelab/$S3_BUCKET/$S3_PREFIX/balances.yaml"               config/balances.yaml
 
       - name: Fetch sqlite DB from MinIO (ok if missing on first run)
