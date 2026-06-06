@@ -45,6 +45,16 @@ jobs:
     env:
       DB_PATH: data/${{ matrix.region.db }}
     steps:
+      - name: DEBUG matrix propagation
+        run: |
+          echo "needs.setup.outputs.matrix (raw) = >>>$RAW<<<"
+          echo "toJSON(matrix)                   = >>>$MJSON<<<"
+          echo "matrix.region.name               = >>>$RNAME<<<"
+        env:
+          RAW: ${{ needs.setup.outputs.matrix }}
+          MJSON: ${{ toJSON(matrix) }}
+          RNAME: ${{ matrix.region.name }}
+
       - uses: actions/checkout@v4
 
       - name: Install uv
