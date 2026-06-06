@@ -15,96 +15,72 @@ env:
   S3_PREFIX: ${{ vars.S3_PREFIX || 'award-flight-researcher' }}
 
 jobs:
-  setup:
-    runs-on: ubuntu-latest
-    outputs:
-      matrix: ${{ steps.m.outputs.matrix }}
-    steps:
-      # Emit POLL_MATRIX via env (not inline interpolation) so the shell keeps
-      # the JSON's double quotes instead of stripping them into invalid JSON.
-      - id: m
-        run: echo "matrix=$POLL_MATRIX" >> "$GITHUB_OUTPUT"
-        env:
-          POLL_MATRIX: ${{ vars.POLL_MATRIX }}
-
   poll:
-    needs: setup
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        # Dynamic matrix from a job output (the region list stays out of git).
-        # `vars` is NOT available in strategy.matrix — matrix expansion happens
-        # server-side before `vars` is injected — so it must come from
-        # needs.<job>.outputs. Requires Gitea >= 1.26 (older servers collapse a
-        # dynamic matrix to a single empty job; see #25179 / PR #32823).
-        region: ${{ fromJSON(needs.setup.outputs.matrix) }}
+    # One job loops over every region in POLL_MATRIX. We can't use a dynamic
+    # strategy.matrix here: Gitea (even 1.26.2 + act_runner 0.6.x) freezes the
+    # matrix at plan time before any source is available — `vars` isn't injected
+    # into strategy.matrix at all, and a `needs.<job>.outputs` value isn't ready
+    # yet — so `fromJSON(...)` collapses to a single empty job (#25179). Looping
+    # in one job keeps the region list in the POLL_MATRIX variable (uncommitted)
+    # and runs regions sequentially.
     concurrency:
-      group: poll-${{ matrix.region.name }}
+      group: poll
       cancel-in-progress: false
-    env:
-      DB_PATH: data/${{ matrix.region.db }}
     steps:
-      - name: DEBUG matrix propagation
-        run: |
-          echo "needs.setup.outputs.matrix (raw) = >>>$RAW<<<"
-          echo "toJSON(matrix)                   = >>>$MJSON<<<"
-          echo "matrix.region.name               = >>>$RNAME<<<"
-        env:
-          RAW: ${{ needs.setup.outputs.matrix }}
-          MJSON: ${{ toJSON(matrix) }}
-          RNAME: ${{ matrix.region.name }}
-
       - uses: actions/checkout@v4
 
       - name: Install uv
         run: curl -LsSf https://astral.sh/uv/install.sh | sh
 
-      - name: Install mc and fetch config from MinIO
+      - name: Install mc + jq
         run: |
           set -e
           curl -sSLo /usr/local/bin/mc https://dl.min.io/client/mc/release/linux-amd64/mc
           chmod +x /usr/local/bin/mc
-          export PATH="/usr/local/bin:$PATH"
-          echo "S3_ENDPOINT=$S3_ENDPOINT"
-          echo "S3_BUCKET=$S3_BUCKET"
-          echo "S3_PREFIX=$S3_PREFIX"
+          command -v jq >/dev/null || { apt-get update -qq && apt-get install -y -qq jq; }
           mc alias set homelab "$S3_ENDPOINT" "$AWS_ACCESS_KEY_ID" "$AWS_SECRET_ACCESS_KEY"
-          mc alias list
           mc ls "homelab/$S3_BUCKET/$S3_PREFIX/"
-          SEARCH_FILE="${{ matrix.region.search }}"
-          echo "SEARCH_FILE=$SEARCH_FILE"
-          mc cp "homelab/$S3_BUCKET/$S3_PREFIX/${SEARCH_FILE:-search.yaml}" config/search.yaml
-          mc cp "homelab/$S3_BUCKET/$S3_PREFIX/balances.yaml"               config/balances.yaml
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          S3_ENDPOINT: ${{ vars.S3_ENDPOINT }}
-          S3_BUCKET: ${{ vars.S3_BUCKET }}
-          S3_PREFIX: ${{ vars.S3_PREFIX || 'award-flight-researcher' }}
-
-      - name: Fetch sqlite DB from MinIO (ok if missing on first run)
-        run: |
-          mkdir -p "$(dirname "$DB_PATH")"
-          mc cp "homelab/$S3_BUCKET/$S3_PREFIX/${{ matrix.region.db }}" "$DB_PATH" || \
-            echo "no existing DB in MinIO — starting fresh"
 
       - name: uv sync
         run: ~/.local/bin/uv sync
 
-      - name: init-db (idempotent)
-        run: ~/.local/bin/uv run researcher init-db
+      - name: Poll all regions
+        run: |
+          fail=0
+          # Process substitution (not a pipe) so `fail` survives the loop body.
+          while read -r region; do
+            name=$(jq -r '.name'   <<<"$region")
+            search=$(jq -r '.search // ""' <<<"$region")
+            db=$(jq -r '.db'       <<<"$region")
+            echo "::group::region=$name search=${search:-search.yaml} db=$db"
+            db_path="data/$db"
+            mkdir -p "$(dirname "$db_path")"
+            if (
+              set -e
+              mc cp "homelab/$S3_BUCKET/$S3_PREFIX/${search:-search.yaml}" config/search.yaml
+              mc cp "homelab/$S3_BUCKET/$S3_PREFIX/balances.yaml"          config/balances.yaml
+              mc cp "homelab/$S3_BUCKET/$S3_PREFIX/$db" "$db_path" \
+                || echo "no existing DB in MinIO — starting fresh"
+              RESEARCHER_DB_PATH="$db_path" ~/.local/bin/uv run researcher init-db
+              RESEARCHER_DB_PATH="$db_path" ~/.local/bin/uv run researcher run-once
+              mc cp "$db_path" "homelab/$S3_BUCKET/$S3_PREFIX/$db"
+            ); then
+              echo "region=$name OK"
+            else
+              echo "region=$name FAILED (exit $?)"
+              fail=1
+            fi
+            echo "::endgroup::"
+          done < <(echo "$POLL_MATRIX" | jq -c '.[]')
+          exit $fail
         env:
-          SEATSAERO_API_KEY: ${{ secrets.SEATSAERO_API_KEY }}
-          RESEARCHER_DB_PATH: ${{ env.DB_PATH }}
-
-      - name: run-once
-        run: ~/.local/bin/uv run researcher run-once
-        env:
+          POLL_MATRIX: ${{ vars.POLL_MATRIX }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           SEATSAERO_API_KEY: ${{ secrets.SEATSAERO_API_KEY }}
           PUSHOVER_TOKEN: ${{ secrets.PUSHOVER_TOKEN }}
           PUSHOVER_USER: ${{ secrets.PUSHOVER_USER }}
-          RESEARCHER_DB_PATH: ${{ env.DB_PATH }}
-
-      - name: Push sqlite DB back to MinIO
-        run: mc cp "$DB_PATH" "homelab/$S3_BUCKET/$S3_PREFIX/${{ matrix.region.db }}"
