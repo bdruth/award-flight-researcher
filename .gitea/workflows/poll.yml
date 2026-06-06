@@ -15,23 +15,17 @@ env:
   S3_PREFIX: ${{ vars.S3_PREFIX || 'award-flight-researcher' }}
 
 jobs:
-  setup:
-    runs-on: ubuntu-latest
-    outputs:
-      matrix: ${{ steps.m.outputs.matrix }}
-    steps:
-      - id: m
-        run: echo "matrix=$POLL_MATRIX" >> "$GITHUB_OUTPUT"
-        env:
-          POLL_MATRIX: ${{ vars.POLL_MATRIX }}
-
   poll:
-    needs: setup
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        region: ${{ fromJSON(needs.setup.outputs.matrix) }}
+        # Sourced directly from the POLL_MATRIX repo variable (the region list
+        # stays out of git). A static `vars` value is available at matrix-eval
+        # time; a `needs.<job>.outputs` value is NOT on this act_runner version
+        # (Gitea #25179 — dynamic matrix from job outputs collapses to a single
+        # empty job), so we must not round-trip it through a setup job.
+        region: ${{ fromJSON(vars.POLL_MATRIX) }}
     concurrency:
       group: poll-${{ matrix.region.name }}
       cancel-in-progress: false
