@@ -41,20 +41,28 @@ jobs:
       - name: Install uv
         run: curl -LsSf https://astral.sh/uv/install.sh | sh
 
-      - name: Install mc (MinIO client)
+      - name: Install mc and fetch config from MinIO
         run: |
+          set -e
           curl -sSLo /usr/local/bin/mc https://dl.min.io/client/mc/release/linux-amd64/mc
           chmod +x /usr/local/bin/mc
+          export PATH="/usr/local/bin:$PATH"
+          echo "S3_ENDPOINT=$S3_ENDPOINT"
+          echo "S3_BUCKET=$S3_BUCKET"
+          echo "S3_PREFIX=$S3_PREFIX"
           mc alias set homelab "$S3_ENDPOINT" "$AWS_ACCESS_KEY_ID" "$AWS_SECRET_ACCESS_KEY"
+          mc alias list
+          mc ls "homelab/$S3_BUCKET/$S3_PREFIX/"
+          SEARCH_FILE="${{ matrix.region.search }}"
+          echo "SEARCH_FILE=$SEARCH_FILE"
+          mc cp "homelab/$S3_BUCKET/$S3_PREFIX/${SEARCH_FILE:-search.yaml}" config/search.yaml
+          mc cp "homelab/$S3_BUCKET/$S3_PREFIX/balances.yaml"               config/balances.yaml
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-
-      - name: Fetch config from MinIO
-        run: |
-          SEARCH_FILE="${{ matrix.region.search }}"
-          mc cp "homelab/$S3_BUCKET/$S3_PREFIX/${SEARCH_FILE:-search.yaml}" config/search.yaml
-          mc cp "homelab/$S3_BUCKET/$S3_PREFIX/balances.yaml"               config/balances.yaml
+          S3_ENDPOINT: ${{ vars.S3_ENDPOINT }}
+          S3_BUCKET: ${{ vars.S3_BUCKET }}
+          S3_PREFIX: ${{ vars.S3_PREFIX || 'award-flight-researcher' }}
 
       - name: Fetch sqlite DB from MinIO (ok if missing on first run)
         run: |
