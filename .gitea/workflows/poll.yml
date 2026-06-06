@@ -3,10 +3,13 @@ name: poll
 on:
   schedule:
     # seats.aero Pro tier = 1000 calls/calendar day, resets midnight UTC.
-    # One cycle = ~72 search calls (windows × routes × directions), so the daily
-    # budget caps us at ~13 cycles/day across all matrix entries combined. Every 2
-    # hours = 12 cycles/day per region, leaving headroom for /trips enrichment.
-    - cron: "0 */2 * * *"
+    # Every cron trigger polls ALL regions in POLL_MATRIX (one looping job), so
+    # the floor is ~78 /search calls/cycle for the current 2 regions (measured),
+    # plus one /trips call per newly-discovered leg. Every 4h = 6 cycles/day =
+    # ~468 /search calls/day, leaving ~530 calls of headroom for /trips. Going
+    # to every 2h (12 cycles) would spend ~936/day on search alone and 429 out.
+    # Re-tune if the region count changes: keep cycles/day × 78 well under 1000.
+    - cron: "0 */4 * * *"
   workflow_dispatch:
 
 env:
