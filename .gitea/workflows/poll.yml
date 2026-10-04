@@ -16,6 +16,12 @@ env:
   S3_ENDPOINT: ${{ vars.S3_ENDPOINT }}
   S3_BUCKET: ${{ vars.S3_BUCKET }}
   S3_PREFIX: ${{ vars.S3_PREFIX || 'award-flight-researcher' }}
+  # MinIO ignores the region, but the AWS CLI requires one. Recent botocore
+  # adds CRC checksums to every request by default; limit them to operations
+  # that require them so older MinIO builds don't reject uploads.
+  AWS_DEFAULT_REGION: us-east-1
+  AWS_REQUEST_CHECKSUM_CALCULATION: when_required
+  AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
 
 jobs:
   poll:
@@ -36,14 +42,13 @@ jobs:
       - name: Install uv
         run: curl -LsSf https://astral.sh/uv/install.sh | sh
 
-      - name: Install mc + jq
+      # MinIO stopped publishing mc binaries (dl.min.io returns 410 Gone), so
+      # S3 access goes through the AWS CLI via uvx instead.
+      - name: Install jq + check S3 access
         run: |
           set -e
-          curl -sSLo /usr/local/bin/mc https://dl.min.io/client/mc/release/linux-amd64/mc
-          chmod +x /usr/local/bin/mc
           command -v jq >/dev/null || { apt-get update -qq && apt-get install -y -qq jq; }
-          mc alias set homelab "$S3_ENDPOINT" "$AWS_ACCESS_KEY_ID" "$AWS_SECRET_ACCESS_KEY"
-          mc ls "homelab/$S3_BUCKET/$S3_PREFIX/"
+          ~/.local/bin/uvx --from awscli aws --endpoint-url "$S3_ENDPOINT" s3 ls "s3://$S3_BUCKET/$S3_PREFIX/"
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
@@ -54,6 +59,8 @@ jobs:
       - name: Poll all regions
         run: |
           fail=0
+          s3cp() { ~/.local/bin/uvx --from awscli aws --endpoint-url "$S3_ENDPOINT" s3 cp --only-show-errors "$@"; }
+          remote="s3://$S3_BUCKET/$S3_PREFIX"
           # Process substitution (not a pipe) so `fail` survives the loop body.
           while read -r region; do
             name=$(jq -r '.name'   <<<"$region")
@@ -64,13 +71,13 @@ jobs:
             mkdir -p "$(dirname "$db_path")"
             if (
               set -e
-              mc cp "homelab/$S3_BUCKET/$S3_PREFIX/${search:-search.yaml}" config/search.yaml
-              mc cp "homelab/$S3_BUCKET/$S3_PREFIX/balances.yaml"          config/balances.yaml
-              mc cp "homelab/$S3_BUCKET/$S3_PREFIX/$db" "$db_path" \
+              s3cp "$remote/${search:-search.yaml}" config/search.yaml
+              s3cp "$remote/balances.yaml"          config/balances.yaml
+              s3cp "$remote/$db" "$db_path" \
                 || echo "no existing DB in MinIO — starting fresh"
               RESEARCHER_DB_PATH="$db_path" ~/.local/bin/uv run researcher init-db
               RESEARCHER_DB_PATH="$db_path" ~/.local/bin/uv run researcher run-once
-              mc cp "$db_path" "homelab/$S3_BUCKET/$S3_PREFIX/$db"
+              s3cp "$db_path" "$remote/$db"
             ); then
               echo "region=$name OK"
             else
