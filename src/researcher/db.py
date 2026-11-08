@@ -70,6 +70,30 @@ CREATE TABLE IF NOT EXISTS poll_log (
     result_count INTEGER,
     error TEXT
 );
+
+-- Specific-flight watch (flightwatch.py): one row per (flight, date, cabin, program).
+-- `available` means "currently qualifying" (seen in this program's award space and
+-- under any configured mileage cap). Alerts fire on 0→1 and on seat-count increases.
+CREATE TABLE IF NOT EXISTS flight_watch (
+    flight       TEXT NOT NULL,
+    depart_date  TEXT NOT NULL,
+    origin       TEXT NOT NULL,
+    destination  TEXT NOT NULL,
+    cabin        TEXT NOT NULL,
+    source       TEXT NOT NULL,
+    available    INTEGER NOT NULL,
+    seats        INTEGER NOT NULL,
+    miles        INTEGER NOT NULL,
+    fees_cents   INTEGER NOT NULL,
+    availability_id TEXT,
+    data_updated_at TEXT,
+    first_seen_at TEXT NOT NULL,
+    last_seen_at  TEXT NOT NULL,
+    last_checked_at TEXT NOT NULL,
+    last_alerted_at TEXT,
+    last_alerted_seats INTEGER,
+    PRIMARY KEY (flight, depart_date, cabin, source)
+);
 """
 
 

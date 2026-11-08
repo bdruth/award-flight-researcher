@@ -163,6 +163,31 @@ def watch(interval_minutes: int, search_path: Path, balances_path: Path) -> None
         time.sleep(interval_minutes * 60)
 
 
+@cli.command("watch-flights")
+@click.option("--watch", "watch_path", type=click.Path(path_type=Path), default="config/watch.yaml", show_default=True)
+@click.option("--dry-run", is_flag=True, help="Print alerts instead of sending them.")
+def watch_flights(watch_path: Path, dry_run: bool) -> None:
+    """Check specific already-booked flights for newly opened premium award space."""
+    from . import flightwatch
+
+    env = load_env()
+    _setup_logging(env.log_level)
+    if not watch_path.exists():
+        log.info("no watch config at %s; nothing to do", watch_path)
+        return
+    cfg = flightwatch.load_watch(watch_path)
+    conn = db_mod.connect(env.db_path)
+    db_mod.init(conn)
+    with seatsaero.SeatsAeroClient(env.seatsaero_api_key) as client:
+        alerts = flightwatch.run_check(conn, client, cfg)
+    if dry_run:
+        for a in alerts:
+            click.echo(f"[p{a.priority}] {a.title}\n{a.body}\n  url: {a.url}\n")
+        return
+    alerts_mod.dispatch(env, alerts)
+    log.info("flight watch: %d alert(s) dispatched", len(alerts))
+
+
 @cli.command("pairs")
 @click.option("--state", default="viable", type=click.Choice(["candidate", "viable", "alerted", "invalidated"]))
 @click.option("--limit", default=50, show_default=True)

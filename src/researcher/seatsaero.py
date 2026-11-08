@@ -84,6 +84,7 @@ class SeatsAeroClient:
         end: date,
         sources: Iterable[str] | None = None,
         take: int = 1000,
+        include_trips: bool = False,
     ) -> list[dict]:
         params: dict[str, str | int] = {
             "origin_airport": origin,
@@ -95,6 +96,10 @@ class SeatsAeroClient:
         }
         if sources:
             params["sources"] = ",".join(sources)
+        if include_trips:
+            # Inline each row's trip variants (flight numbers, per-trip seats) as
+            # `AvailabilityTrips`, saving a /trips call per row.
+            params["include_trips"] = "true"
         out: list[dict] = []
         skip = 0
         while True:

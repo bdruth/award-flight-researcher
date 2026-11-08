@@ -1,0 +1,32 @@
+# Specific-flight watch (`researcher watch-flights`): alert when premium-cabin award
+# space opens on a flight you're already booked on, so you can book the better award
+# and then cancel the original. In CI this file lives in MinIO as `watch.yaml`.
+
+# Programs (seats.aero source names) whose award space counts. For JAL-operated
+# flights: american/alaska/qantas all see the same JAL partner space (bookable with
+# AAdvantage miles); `jal` is JAL Mileage Bank's own (dynamically priced) inventory.
+sources: [american, alaska, qantas, jal]
+
+# Optional per-program cap on miles per seat; space priced above it is ignored.
+max_miles:
+  jal: 105000
+
+# Pushover priority for "opened"/"more seats" alerts: 1 = high (bypasses quiet hours),
+# 2 = emergency (repeats every 5 min until acknowledged, up to 1h).
+# "Gone" notices are always sent quietly (priority -1).
+priority: 1
+notify_gone: true
+
+flights:
+  - flight: JL9
+    origin: ORD
+    destination: HND
+    date: 2027-01-02
+    cabins: [business, first]
+    note: "Book the new award first, then cancel the original."
+  - flight: JL56
+    origin: NRT
+    destination: ORD
+    date: 2027-01-21
+    cabins: [business, first]
+    # sources: [american]   # optional per-flight override

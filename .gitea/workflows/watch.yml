@@ -1,0 +1,60 @@
+name: watch-flights
+
+# Specific-flight watch: alerts when premium award space opens on flights that are
+# already booked (see src/researcher/flightwatch.py). Runs far more often than the
+# pair poller because swap windows close in hours, but it's cheap: one seats.aero
+# /search call per watched flight per run. Every 30 min × 2 flights = ~96 calls/day,
+# on top of the poller's ~600/day — keep (48 × flights) + poller well under 1000.
+# Departed flights are skipped automatically (no call spent).
+on:
+  schedule:
+    - cron: "15,45 * * * *"
+  workflow_dispatch:
+
+env:
+  S3_ENDPOINT: ${{ vars.S3_ENDPOINT }}
+  S3_BUCKET: ${{ vars.S3_BUCKET }}
+  S3_PREFIX: ${{ vars.S3_PREFIX || 'award-flight-researcher' }}
+  AWS_DEFAULT_REGION: us-east-1
+  AWS_REQUEST_CHECKSUM_CALCULATION: when_required
+  AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    # Own group: the watch only touches watch.yaml + watch.db, never the region DBs,
+    # so it doesn't need to wait on (or block) the pair poller.
+    concurrency:
+      group: watch-flights
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        run: curl -LsSf https://astral.sh/uv/install.sh | sh
+
+      - name: uv sync
+        run: ~/.local/bin/uv sync
+
+      - name: Check watched flights
+        run: |
+          set -e
+          s3() { ~/.local/bin/uvx --from awscli aws --endpoint-url "$S3_ENDPOINT" s3 "$@"; }
+          remote="s3://$S3_BUCKET/$S3_PREFIX"
+          mkdir -p config data
+          if ! s3 cp --only-show-errors "$remote/watch.yaml" config/watch.yaml; then
+            echo "no watch.yaml in MinIO — nothing to watch"
+            exit 0
+          fi
+          s3 cp --only-show-errors "$remote/watch.db" data/watch.db \
+            || echo "no existing watch.db in MinIO — starting fresh"
+          RESEARCHER_DB_PATH=data/watch.db ~/.local/bin/uv run researcher watch-flights --watch config/watch.yaml
+          # Checkpoint the WAL into the main file so the single uploaded file is complete.
+          ~/.local/bin/uv run python -c "import sqlite3; sqlite3.connect('data/watch.db').execute('PRAGMA wal_checkpoint(TRUNCATE)')"
+          s3 cp --only-show-errors data/watch.db "$remote/watch.db"
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          SEATSAERO_API_KEY: ${{ secrets.SEATSAERO_API_KEY }}
+          PUSHOVER_TOKEN: ${{ secrets.PUSHOVER_TOKEN }}
+          PUSHOVER_USER: ${{ secrets.PUSHOVER_USER }}

@@ -17,10 +17,14 @@ ISO = "%Y-%m-%dT%H:%M:%SZ"
 
 @dataclass(frozen=True)
 class Alert:
-    pair_id: int
+    pair_id: int  # 0 for alerts that aren't about a pair (e.g. flight-watch)
     title: str
     body: str
     url: str | None = None
+    url_title: str | None = None
+    # Pushover priority: -1 quiet, 0 normal, 1 high (bypasses quiet hours),
+    # 2 emergency (repeats every 5 min until acknowledged, for up to 1h).
+    priority: int = 1
 
 
 @dataclass(frozen=True)
@@ -184,33 +188,43 @@ def mark_alerted(conn: sqlite3.Connection, pair_ids: list[int]) -> None:
     )
 
 
+_NTFY_PRIORITY = {-2: "min", -1: "low", 0: "default", 1: "high", 2: "urgent"}
+
+
 def _send_ntfy(env: Env, alert: Alert) -> None:
     url = f"{env.ntfy_server.rstrip('/')}/{env.ntfy_topic}"
+    headers = {
+        "Title": alert.title,
+        "Priority": _NTFY_PRIORITY.get(alert.priority, "high"),
+        "Tags": "airplane,fire",
+    }
+    if alert.url:
+        headers["Click"] = alert.url
     try:
-        r = httpx.post(
-            url,
-            data=alert.body.encode("utf-8"),
-            headers={"Title": alert.title, "Priority": "high", "Tags": "airplane,fire"},
-            timeout=10,
-        )
+        r = httpx.post(url, data=alert.body.encode("utf-8"), headers=headers, timeout=10)
         r.raise_for_status()
     except httpx.HTTPError as e:
         log.warning("ntfy send failed for pair %s: %s", alert.pair_id, e)
 
 
 def _send_pushover(env: Env, alert: Alert) -> None:
+    data: dict[str, str | int] = {
+        "token": env.pushover_token,
+        "user": env.pushover_user,
+        "title": alert.title,
+        "message": alert.body,
+        "priority": alert.priority,
+    }
+    if alert.priority >= 2:
+        # Emergency priority requires retry/expire: re-alert every 5 min for 1h.
+        data["retry"] = 300
+        data["expire"] = 3600
+    if alert.url:
+        data["url"] = alert.url
+        if alert.url_title:
+            data["url_title"] = alert.url_title
     try:
-        r = httpx.post(
-            "https://api.pushover.net/1/messages.json",
-            data={
-                "token": env.pushover_token,
-                "user": env.pushover_user,
-                "title": alert.title,
-                "message": alert.body,
-                "priority": 1,
-            },
-            timeout=10,
-        )
+        r = httpx.post("https://api.pushover.net/1/messages.json", data=data, timeout=10)
         r.raise_for_status()
     except httpx.HTTPError as e:
         log.warning("pushover send failed for pair %s: %s", alert.pair_id, e)
