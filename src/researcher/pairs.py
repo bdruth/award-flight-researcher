@@ -8,7 +8,13 @@ from datetime import datetime, timezone
 
 from .config import BalancesConfig, SearchConfig
 from .pricing import best_pax_split, pair_feasibility
-from .seatsaero import RateLimited, SeatsAeroClient, any_trip_within_layover_window, best_trip_quality
+from .seatsaero import (
+    RateLimited,
+    SeatsAeroClient,
+    any_trip_is_nonstop,
+    any_trip_within_layover_window,
+    best_trip_quality,
+)
 
 log = logging.getLogger(__name__)
 
@@ -96,6 +102,17 @@ def join_pairs(
         ])
     window_predicate = "(" + " OR ".join(window_clauses) + ")" if window_clauses else "0"
 
+    # direct_only also filters at ingestion (seatsaero.normalize) on the per-cabin Direct
+    # flag, but that flag only promises a nonstop exists somewhere in the availability.
+    # has_nonstop is derived from the stored trip segments, so it's the honest check.
+    # Un-enriched legs and synthetic 'mixed' legs are NULL here and pass through.
+    nonstop_predicate = (
+        " AND (o.has_nonstop IS NULL OR o.has_nonstop = 1)"
+        " AND (r.has_nonstop IS NULL OR r.has_nonstop = 1)"
+        if search.leg_filters.direct_only
+        else ""
+    )
+
     rows = conn.execute(
         f"""
         SELECT
@@ -127,6 +144,7 @@ def join_pairs(
          AND {window_predicate}
          AND (o.meets_layover_filter IS NULL OR o.meets_layover_filter = 1)
          AND (r.meets_layover_filter IS NULL OR r.meets_layover_filter = 1)
+         {nonstop_predicate}
         """,
         (
             *origins, *out_dests, *out_dests, *origins,
@@ -245,7 +263,8 @@ def enrich_layovers(
     conn: sqlite3.Connection, client: SeatsAeroClient, *, layover_min: int, layover_max: int
 ) -> int:
     """Fetch /trips for legs missing segments_json, then (re)compute meets_layover_filter
-    for every enriched leg against the current layover window. Returns count of legs newly fetched."""
+    and has_nonstop for every enriched leg against the current config. Returns count of legs
+    newly fetched."""
     to_fetch = conn.execute(
         """
         SELECT id, availability_id FROM legs
@@ -274,10 +293,11 @@ def enrich_layovers(
         )
         fetched += 1
 
-    # Recompute the filter flag for every leg that has segment data, so a config
-    # change to layover_minutes takes effect on the next cycle without re-polling.
+    # Recompute the derived flags for every leg that has segment data, so a config
+    # change to layover_minutes (or to this logic) takes effect on the next cycle
+    # without re-polling.
     enriched = conn.execute(
-        "SELECT id, segments_json FROM legs WHERE segments_json IS NOT NULL"
+        "SELECT id, origin, destination, cabin, segments_json FROM legs WHERE segments_json IS NOT NULL"
     ).fetchall()
     for r in enriched:
         try:
@@ -285,9 +305,12 @@ def enrich_layovers(
         except (ValueError, TypeError):
             continue
         ok = any_trip_within_layover_window(trips, layover_min=layover_min, layover_max=layover_max)
+        nonstop = any_trip_is_nonstop(
+            trips, origin=r["origin"], destination=r["destination"], cabin=r["cabin"]
+        )
         conn.execute(
-            "UPDATE legs SET meets_layover_filter = ? WHERE id = ?",
-            (1 if ok else 0, r["id"]),
+            "UPDATE legs SET meets_layover_filter = ?, has_nonstop = ? WHERE id = ?",
+            (1 if ok else 0, 1 if nonstop else 0, r["id"]),
         )
     return fetched
 

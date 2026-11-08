@@ -1,3 +1,4 @@
+import json
 from datetime import date
 from pathlib import Path
 
@@ -16,7 +17,13 @@ from researcher.config import (
     TransferablePool,
     TripConfig,
 )
-from researcher.seatsaero import LegRow, _taxes_to_cents, any_trip_within_layover_window, availability_url, search_url
+from researcher.seatsaero import (
+    LegRow,
+    _taxes_to_cents,
+    any_trip_within_layover_window,
+    availability_url,
+    search_url,
+)
 
 
 def _search(
@@ -25,6 +32,7 @@ def _search(
     windows: tuple[DateWindow, ...] = (
         DateWindow(start=date(2026, 12, 15), end=date(2027, 1, 15), nights_min=13, nights_max=15),
     ),
+    direct_only: bool = False,
 ) -> SearchConfig:
     return SearchConfig(
         trip=TripConfig(passengers=4, windows=windows),
@@ -39,7 +47,7 @@ def _search(
         cabins=cabins,
         sources=("aeroplan",),
         poll=PollConfig(15, 360, 30, 5),
-        leg_filters=LegFilters(min_seats=4, exclude_overnight_layovers=False),
+        leg_filters=LegFilters(min_seats=4, exclude_overnight_layovers=False, direct_only=direct_only),
     )
 
 
@@ -239,6 +247,88 @@ def test_layover_filter_excludes_pairs_with_failing_legs(conn):
     conn.execute("UPDATE legs SET meets_layover_filter = 0 WHERE origin = 'ORD'")
     stats = pairs_mod.join_pairs(conn, _search(), _balances())
     assert stats.pairs_invalidated == 1
+
+
+def _seg(origin: str, dest: str, *, cabin: str = "economy", order: int = 0) -> dict:
+    return {"Order": order, "OriginAirport": origin, "DestinationAirport": dest, "Cabin": cabin}
+
+
+def _store_trips(conn, leg_id: int, trips: list[dict]) -> None:
+    conn.execute("UPDATE legs SET segments_json = ? WHERE id = ?", (json.dumps(trips), leg_id))
+
+
+def _recompute_flags(conn) -> None:
+    # Every leg here already has segments_json, so no /trips fetch happens and the
+    # client is never touched — enrich_layovers only recomputes the derived flags.
+    pairs_mod.enrich_layovers(conn, None, layover_min=90, layover_max=300)
+
+
+def _has_nonstop(conn, leg_id: int):
+    return conn.execute("SELECT has_nonstop FROM legs WHERE id = ?", (leg_id,)).fetchone()[0]
+
+
+def test_has_nonstop_zero_when_every_trip_is_a_connection(conn):
+    # The live bug: seats.aero flags the availability direct=1, but no stored trip is
+    # actually nonstop (e.g. ORD→DCA then IAD→HND for an ORD→HND leg).
+    leg_id = pairs_mod.upsert_leg(conn, _leg("ORD", "HND", date(2026, 12, 18)))
+    _store_trips(conn, leg_id, [
+        {"Stops": 1, "AvailabilitySegments": [_seg("ORD", "DCA"), _seg("IAD", "HND", order=1)]},
+        {"Stops": 1, "AvailabilitySegments": [_seg("ORD", "SFO"), _seg("SFO", "HND", order=1)]},
+    ])
+    _recompute_flags(conn)
+    assert _has_nonstop(conn, leg_id) == 0
+
+
+def test_has_nonstop_one_for_true_single_segment_trip(conn):
+    leg_id = pairs_mod.upsert_leg(conn, _leg("ORD", "HND", date(2026, 12, 18)))
+    _store_trips(conn, leg_id, [
+        {"Stops": 1, "AvailabilitySegments": [_seg("ORD", "DCA"), _seg("IAD", "HND", order=1)]},
+        {"Stops": 0, "AvailabilitySegments": [_seg("ORD", "HND")]},
+    ])
+    _recompute_flags(conn)
+    assert _has_nonstop(conn, leg_id) == 1
+
+
+def test_has_nonstop_rejects_wrong_cabin_or_mismatched_endpoints(conn):
+    # /trips returns every cabin and every routing under an availability. A nonstop in
+    # another cabin, or on another city pair, says nothing about this leg.
+    leg_id = pairs_mod.upsert_leg(conn, _leg("ORD", "HND", date(2026, 12, 18), cabin="economy"))
+    _store_trips(conn, leg_id, [
+        {"Stops": 0, "AvailabilitySegments": [_seg("ORD", "HND", cabin="business")]},
+        {"Stops": 0, "AvailabilitySegments": [_seg("ORD", "NRT")]},
+        {"Stops": 0, "AvailabilitySegments": [_seg("EWR", "HND")]},
+    ])
+    _recompute_flags(conn)
+    assert _has_nonstop(conn, leg_id) == 0
+
+
+def test_has_nonstop_left_null_for_synthetic_mixed_legs(conn):
+    for cabin, miles in (("business", 120_000), ("economy", 55_000)):
+        pairs_mod.upsert_leg(conn, _leg("ORD", "HND", date(2026, 12, 18), cabin=cabin, seats=2, miles=miles))
+    pairs_mod.synthesize_pax_splits(conn, pax=4, cabins=("economy", "business"), balances=_balances())
+    _recompute_flags(conn)
+    mixed = conn.execute("SELECT has_nonstop FROM legs WHERE cabin = 'mixed'").fetchone()
+    assert mixed[0] is None
+
+
+def test_direct_only_join_requires_genuine_nonstop(conn):
+    out_id = pairs_mod.upsert_leg(conn, _leg("ORD", "HND", date(2026, 12, 18)))
+    pairs_mod.upsert_leg(conn, _leg("HND", "ORD", date(2027, 1, 1)))
+    # Outbound proven nonstop; the return is un-enriched (has_nonstop NULL) and must
+    # still pass through rather than silently vanishing.
+    conn.execute("UPDATE legs SET has_nonstop = 1 WHERE id = ?", (out_id,))
+    stats = pairs_mod.join_pairs(conn, _search(direct_only=True), _balances())
+    assert stats.pairs_new == 1
+
+    # Outbound now proven to be a connection -> the pair drops out of the join.
+    conn.execute("UPDATE legs SET has_nonstop = 0 WHERE id = ?", (out_id,))
+    stats = pairs_mod.join_pairs(conn, _search(direct_only=True), _balances())
+    assert stats.pairs_seen == 0
+    assert stats.pairs_invalidated == 1
+
+    # Same legs with direct_only off: has_nonstop is not consulted at all.
+    stats = pairs_mod.join_pairs(conn, _search(), _balances())
+    assert stats.pairs_seen == 1
 
 
 def test_alert_batch_dedups_per_outbound_and_pareto_filters(conn):

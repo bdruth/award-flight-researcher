@@ -210,6 +210,31 @@ def any_trip_within_layover_window(
     return False
 
 
+def any_trip_is_nonstop(trips: list[dict], *, origin: str, destination: str, cabin: str) -> bool:
+    """True if at least one trip variant is a genuine nonstop for this leg — exactly one
+    segment, flying the leg's own origin→destination, in the leg's own cabin.
+
+    Neither the per-cabin `Direct` flag on /search nor the trip-level `Stops` field can be
+    trusted for this: `Direct` only says a nonstop exists somewhere in the availability at
+    that price, and the trip actually stored for a leg is frequently a connection."""
+    want_origin = str(origin).upper()
+    want_dest = str(destination).upper()
+    want_cabin = str(cabin).lower()
+    for trip in trips:
+        segs = trip.get("AvailabilitySegments") or []
+        if len(segs) != 1:
+            continue
+        seg = segs[0]
+        if str(seg.get("OriginAirport") or "").upper() != want_origin:
+            continue
+        if str(seg.get("DestinationAirport") or "").upper() != want_dest:
+            continue
+        if str(seg.get("Cabin") or "").lower() != want_cabin:
+            continue
+        return True
+    return False
+
+
 def availability_url(availability_id: str) -> str:
     """Direct deep link to a specific availability record on seats.aero."""
     return f"https://seats.aero/i/{availability_id}"

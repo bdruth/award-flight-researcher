@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS legs (
     availability_id TEXT,
     segments_json TEXT,
     meets_layover_filter INTEGER,
+    has_nonstop INTEGER,
     UNIQUE(source, origin, destination, depart_date, cabin)
 );
 
@@ -94,6 +95,7 @@ def _migrate_add_columns(conn: sqlite3.Connection) -> None:
         ("segments_json", "ALTER TABLE legs ADD COLUMN segments_json TEXT"),
         ("meets_layover_filter", "ALTER TABLE legs ADD COLUMN meets_layover_filter INTEGER"),
         ("carriers", "ALTER TABLE legs ADD COLUMN carriers TEXT"),
+        ("has_nonstop", "ALTER TABLE legs ADD COLUMN has_nonstop INTEGER"),
     ):
         if col not in existing:
             conn.execute(ddl)

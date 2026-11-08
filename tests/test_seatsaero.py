@@ -3,7 +3,7 @@ from datetime import date
 import httpx
 import pytest
 
-from researcher.seatsaero import BASE, RateLimited, SeatsAeroClient, normalize
+from researcher.seatsaero import BASE, RateLimited, SeatsAeroClient, any_trip_is_nonstop, normalize
 
 
 def _row(*, j_direct: bool, j_seats: int = 4) -> dict:
@@ -39,6 +39,38 @@ def test_normalize_direct_only_keeps_direct_legs():
     )
     assert len(legs) == 1
     assert legs[0].direct is True
+
+
+def _trip(*segments: dict, stops: int) -> dict:
+    return {"Stops": stops, "AvailabilitySegments": list(segments)}
+
+
+def _tseg(origin: str, dest: str, cabin: str = "business") -> dict:
+    return {"OriginAirport": origin, "DestinationAirport": dest, "Cabin": cabin, "Order": 0}
+
+
+def test_any_trip_is_nonstop_requires_single_matching_segment():
+    connection = _trip(_tseg("ORD", "DCA"), _tseg("IAD", "HND"), stops=1)
+    nonstop = _trip(_tseg("ORD", "HND"), stops=0)
+
+    assert any_trip_is_nonstop([connection], origin="ORD", destination="HND", cabin="business") is False
+    assert any_trip_is_nonstop([connection, nonstop], origin="ORD", destination="HND", cabin="business") is True
+    assert any_trip_is_nonstop([], origin="ORD", destination="HND", cabin="business") is False
+
+
+def test_any_trip_is_nonstop_rejects_other_cabins_and_endpoints():
+    nonstop = _trip(_tseg("ORD", "HND", cabin="business"), stops=0)
+    assert any_trip_is_nonstop([nonstop], origin="ORD", destination="HND", cabin="economy") is False
+    assert any_trip_is_nonstop([nonstop], origin="ORD", destination="NRT", cabin="business") is False
+    assert any_trip_is_nonstop([nonstop], origin="EWR", destination="HND", cabin="business") is False
+    # Case differences in either direction must not matter.
+    assert any_trip_is_nonstop([nonstop], origin="ord", destination="hnd", cabin="BUSINESS") is True
+
+
+def test_any_trip_is_nonstop_ignores_a_lying_stops_field():
+    # Stops=0 on a two-segment trip is not trusted; segment count wins.
+    liar = _trip(_tseg("ORD", "DCA"), _tseg("IAD", "HND"), stops=0)
+    assert any_trip_is_nonstop([liar], origin="ORD", destination="HND", cabin="business") is False
 
 
 def _client_with_transport(handler):
